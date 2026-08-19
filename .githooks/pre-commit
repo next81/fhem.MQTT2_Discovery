@@ -1,0 +1,19 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin qw($RealBin);
+use File::Spec ();
+
+my $root = File::Spec->rel2abs(
+	File::Spec->catdir($RealBin, File::Spec->updir),
+);
+chdir $root or die "Kann nicht in das Projektverzeichnis $root wechseln: $!\n";
+
+my $generator = File::Spec->catfile('tools', 'generate_controls.pl');
+system($^X, $generator) == 0
+	or die "Erzeugen von controls_MQTT2_DISCOVERY.txt fehlgeschlagen.\n";
+
+system('git', 'add', '--', 'controls_MQTT2_DISCOVERY.txt') == 0
+	or die "Staging von controls_MQTT2_DISCOVERY.txt fehlgeschlagen.\n";
+

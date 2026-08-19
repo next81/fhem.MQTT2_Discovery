@@ -1,0 +1,36 @@
+# Copyright (c) 2026 Andreas Planer
+# Licensed under the GNU General Public License v2.0 only
+
+use strict;
+use warnings;
+use Test2::V0;
+use lib 'lib/FHEM';
+use MQTT2_Discovery::DevicePlanner ();
+
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => { one => { device_topic => 'node' } } },
+	[{ topic => 'node/state' }, { topic => 'node/command' }],
+), 'node', 'gemeinsames Devicetopic wird ohne FHEM-Zustand bestimmt');
+
+my @conflicts;
+my ($prepared, $current) = MQTT2_Discovery::DevicePlanner::prepare_json_readings(
+	'conservative', 'manual/topic:.* temperature', [],
+	[{ kind => 'json_reading', name => 'temperature', topic => 'node/state' }],
+	\@conflicts,
+);
+is($prepared, [], 'manuelle JSON-Kollision gewinnt im konservativen Modus');
+is($current, 'manual/topic:.* temperature', 'manuelle Konfiguration bleibt unveraendert');
+is(\@conflicts, ['temperature'], 'Konflikt wird deklarativ gemeldet');
+
+my $plan = MQTT2_Discovery::DevicePlanner::attribute_plan(
+	device => 'node', manage_device_topic => 1, device_topic => 'node',
+	previous_device_topic_exists => 0,
+	reading_list => 'state', previous_reading_list_exists => 1,
+	previous_reading_list => 'old-state',
+	set_list => 'power', previous_set_list_exists => 0,
+);
+is([map { $_->{attribute} } @{ $plan->actions }],
+	[qw(devicetopic readingList setList)],
+	'Device-Plan beschreibt die atomare Schreibreihenfolge');
+
+done_testing;
