@@ -64,6 +64,9 @@ sub mqtt2_devices_for_cid {
 
 	# Der offizielle defptr-Index ist schnell und bildet FHEMs eigene
 	# Zuordnung einer Client-ID ab.
+	# FHEM stellt diesen Index als Package-Global bereit. In diesem Gateway ist
+	# der einzelne Zugriff beabsichtigt und kein Tippfehler.
+	no warnings 'once';
 	my $registered = $main::modules{MQTT2_DEVICE}{defptr}{cid}{$cid};
 	push @devices, grep {
 		ref($_) eq 'HASH' && defined($_->{NAME})

@@ -12,7 +12,7 @@ jobs:
       matrix:
         perl-version: ['5.16', '5.32', '5.38', '5.42']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: shogo82148/actions-setup-perl@v1
         with:
           perl-version: ${{ matrix.perl-version }}
@@ -21,12 +21,12 @@ jobs:
       - name: Compile production modules
         run: find lib FHEM -name '*.pm' -print0 | xargs -0 -n1 perl -Ilib/FHEM -c
       - name: Run tests with fatal warnings
-        run: PERL5OPT=-Mwarnings=FATAL prove -Itests/lib -lv tests
+        run: prove --exec 'perl -Mwarnings=FATAL -Itests/lib' -lv tests
 
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: shogo82148/actions-setup-perl@v1
         with:
           perl-version: '5.42'

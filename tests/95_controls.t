@@ -12,6 +12,18 @@ use File::Spec ();
 
 my $controls_file = 'controls_MQTT2_DISCOVERY.txt';
 my @expected = ('FHEM/10_MQTT2_DISCOVERY.pm');
+
+sub delivery_size {
+	my ($file) = @_;
+	open my $input, '<:raw', $file
+		or die "Kann $file nicht lesen: $!";
+	local $/;
+	my $content = <$input>;
+	close $input or die "Kann $file nicht schliessen: $!";
+	$content =~ s/\r\n/\n/g;
+	return length($content);
+}
+
 find(
 	{
 		no_chdir => 1,
@@ -46,7 +58,11 @@ is(\@errors, [], 'Controlfile enthaelt nur eindeutige gueltige UPD-Zeilen');
 is([sort keys %entries], [sort @expected], 'Controlfile enthaelt exakt alle Produktionsmodule');
 for my $path (sort keys %entries) {
 	ok(-f $path, "$path existiert");
-	is($entries{$path}{size}, -s $path, "$path hat die angegebene Bytelaenge");
+	is(
+		$entries{$path}{size},
+		delivery_size($path),
+		"$path hat die angegebene Auslieferungs-Bytelaenge",
+	);
 }
 
 done_testing;

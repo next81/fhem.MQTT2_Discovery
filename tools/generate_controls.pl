@@ -24,6 +24,21 @@ find(
 
 my %seen;
 
+sub delivery_size {
+	my ($file) = @_;
+	open my $input, '<:raw', $file
+		or die "Kann $file nicht lesen: $!\n";
+	local $/;
+	my $content = <$input>;
+	close $input or die "Kann $file nicht schliessen: $!\n";
+
+	# GitHub liefert die durch .gitattributes festgelegten LF-Zeilenenden aus.
+	# Ein Windows-Checkout kann trotzdem noch CRLF enthalten, dessen zusaetzliche
+	# CR-Bytes nicht in die Control-Datei eingehen duerfen.
+	$content =~ s/\r\n/\n/g;
+	return length($content);
+}
+
 # Sortierung und Deduplizierung machen die Ausgabe reproduzierbar.
 @files = sort grep { !$seen{$_}++ } @files;
 
@@ -38,7 +53,8 @@ for my $file (@files) {
 	# FHEM-controls verwenden auch unter Windows portable Slash-Pfade.
 	$path =~ s{\\}{/}g;
 	my $timestamp = strftime('%Y-%m-%d_%H:%M:%S', localtime($stat[9]));
-	print {$controls} "UPD $timestamp $stat[7] $path\n";
+	my $size = delivery_size($file);
+	print {$controls} "UPD $timestamp $size $path\n";
 }
 
 close $controls or die "Kann $output nicht schliessen: $!\n";
