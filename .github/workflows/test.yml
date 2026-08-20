@@ -17,7 +17,7 @@ jobs:
         with:
           perl-version: ${{ matrix.perl-version }}
       - name: Install test dependencies
-        run: cpanm --installdeps --with-develop .
+        run: cpanm --installdeps .
       - name: Compile production modules
         run: find lib FHEM -name '*.pm' -print0 | xargs -0 -n1 perl -Ilib/FHEM -c
       - name: Run tests with fatal warnings
