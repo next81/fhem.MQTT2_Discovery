@@ -135,7 +135,8 @@ sub _parse_expression {
 	for my $filter (@parts) {
 		return if $filter !~ /^([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$/s;
 		my ($name, $argument) = ($1, $2);
-		return if $name !~ /^(?:lower|upper|trim|int|float|round|default|tojson)$/;
+		return if $name !~ /^(?:lower|upper|trim|int|float|round|default|tojson|is_defined)$/;
+		return if $name eq 'is_defined' && defined($argument) && trim($argument) ne '';
 		my $argument_ast;
 
 		# Optionale Filterargumente durchlaufen denselben sicheren Parser wie der
@@ -257,6 +258,12 @@ sub _evaluate_ast {
 		# durch sein Argument ersetzen darf.
 		if ($name eq 'default') {
 			return ($exists && defined($value) ? (1, $value) : ($argument_exists, $argument));
+		}
+
+		# Home Assistants is_defined-Filter reicht vorhandene Werte unveraendert
+		# weiter und unterdrueckt Updates, deren Quellpfad im Payload fehlt.
+		if ($name eq 'is_defined') {
+			return ($exists, $value);
 		}
 		return (0, undef) if !$exists;
 		$value = '' if !defined $value;

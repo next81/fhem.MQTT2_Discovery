@@ -340,10 +340,18 @@ sub _map_canonical_entity {
 		$entity->{step} = 1 if !defined($entity->{step});
 	}
 
-	_add_entry(\@readings, \@warnings,
-		_reading($entity->{state_topic}, $entity->{value_template}, $state_reading_name,
-			$component eq 'device_automation' ? $entity->{payload} : undef,
-			$json_autocreate, $json_reading_name, $reading_name), 'state');
+	my $state_entry = _reading($entity->{state_topic}, $entity->{value_template}, $state_reading_name,
+		$component eq 'device_automation' ? $entity->{payload} : undef,
+		$json_autocreate, $json_reading_name, $reading_name);
+
+	# HA-Device-Automationen duerfen in ihren Templates auf den strukturierten
+	# Triggerwert zugreifen; normale State-Entities behalten ihren bisherigen Kontext.
+	if (ref($state_entry) eq 'HASH' && !$state_entry->{error}
+			&& $component eq 'device_automation' && defined($entity->{value_template})) {
+		$state_entry->{template_context} = 'trigger';
+		$state_entry->{line} = MQTT2_Discovery::Mapper::Renderer::render_entry($state_entry, undef);
+	}
+	_add_entry(\@readings, \@warnings, $state_entry, 'state');
 
 	_add_supplemental_signals(\@readings, \@warnings, $extensions->{supplemental_signals});
 

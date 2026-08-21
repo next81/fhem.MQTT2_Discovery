@@ -12,6 +12,13 @@ is(MQTT2_Discovery::DevicePlanner::device_topic(
 	[{ topic => 'node/state' }, { topic => 'node/command' }],
 ), 'node', 'gemeinsames Devicetopic wird ohne FHEM-Zustand bestimmt');
 
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => {} }, [{ topic => 'home/+/RTL_433toMQTT/model/42' }],
+), 'home', 'Devicetopic endet vor einer MQTT-Wildcard');
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => {} }, [{ topic => '+/+/RTL_433toMQTT/model/42' }],
+), undef, 'fuehrende MQTT-Wildcards werden nicht als Devicetopic verwendet');
+
 my @conflicts;
 my ($prepared, $current) = MQTT2_Discovery::DevicePlanner::prepare_json_readings(
 	'conservative', 'manual/topic:.* temperature', [],

@@ -115,6 +115,13 @@ zugeordnet. Ein leerer retained Config-Payload entfernt die zuvor ueber dieses
 Topic angekuendigte Entity beziehungsweise das gesamte Device aus der
 Discovery-Verwaltung.
 
+Gueltige MQTT-Wildcards in eingehenden HA-Topicfiltern werden unterstuetzt:
+`+` steht fuer genau ein Topicsegment, ein abschliessendes `#` fuer beliebig
+viele Untersegmente. Der sichere Template-Interpreter versteht ausserdem den
+HA-Filter `is_defined`. Bei `device_automation` stehen die Triggerpfade
+`trigger.value`, `trigger.value_json`, `trigger.payload` und
+`trigger.payload_json` zur Verfuegung.
+
 ## Tasmota Discovery
 
 Aktuelle Tasmota-Versionen senden standardmaessig keine klassischen

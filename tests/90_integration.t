@@ -593,6 +593,15 @@ subtest 'zwei IODevs mit getrennten Prefixen' => sub {
 subtest 'Runtime-Template und Command-Payload' => sub {
 	my $reading = main::MQTT2_DISCOVERY_runtimeReading('{{ value_json.temperature | round(1) }}', '{"temperature":23.46}', 'temperature');
 	is($reading, { temperature => '23.5' }, 'lesbares Runtime-Reading wertet ein komplexes Template sicher aus');
+	is(main::MQTT2_DISCOVERY_runtimeTriggerReading(
+			'{{ trigger.value.raw }}', '{"value":42,"raw":"11427,1042,407"}', 'rf_event'),
+		{ rf_event => '11427,1042,407' }, 'Triggerkontext stellt den dekodierten JSON-Wert bereit');
+	is(main::MQTT2_DISCOVERY_runtimeTriggerReading(
+			'{{ trigger.payload }}', 'PRESS', 'rf_event'),
+		{ rf_event => 'PRESS' }, 'Triggerkontext behaelt das rohe MQTT-Payload');
+	is(main::MQTT2_DISCOVERY_runtimeTriggerReading(
+			'{{ trigger.value.raw }}', '{"value":42}', 'rf_event'),
+		{}, 'fehlender Triggerpfad erzeugt kein Reading');
 	is(main::MQTT2_DISCOVERY_runtimeReading('e3sgdmFsdWVfanNvbi50ZW1wZXJhdHVyZSB9fQ==', '{"temperature":23.5}', 'temperature'),
 		{}, 'Base64 wird nicht mehr als Runtime-Template akzeptiert');
 	my $command = main::MQTT2_DISCOVERY_runtimeTemplatePublish('node/set', '{{ value }}', 'level 42');
@@ -615,6 +624,30 @@ subtest 'Runtime-Template und Command-Payload' => sub {
 		'Choice-Template lehnt ein ungueltiges Template ab');
 	is(main::MQTT2_DISCOVERY_runtimeJSONPublish('x', 'key', 'brightness invalid'), undef,
 		'JSON-Publish lehnt einen nichtnumerischen Wert ab');
+};
+
+subtest 'OpenMQTTGateway-typische HA-Discovery' => sub {
+	setup();
+	my $gateway_sensor = '{"stat_t":"home/OMG_DEVELOPMENT/433toMQTT/#","avty_t":"home/OMG_DEVELOPMENT/LWT","name":"gatewayRF","uniq_id":"246F287AF0C4-gatewayRF","val_tpl":"{{ value_json.value | is_defined }}","pl_avail":"online","pl_not_avail":"offline","device":{"ids":["246F287AF0C4"],"name":"OMG_DEVELOPMENT","mdl":"[\\"WebUI\\",\\"RF\\"]","mf":"OMG_community"}}';
+	dispatch_message('mqtt', 'omg', 'homeassistant/sensor/246F287AF0C4-gatewayRF/config', $gateway_sensor);
+	ok($main::defs{MQTT2_OMG_DEVELOPMENT}, 'OMG-Gateway wird ueber seine Device-ID angelegt');
+	like(attr_value('MQTT2_OMG_DEVELOPMENT', 'readingList'),
+		qr{\$DEVICETOPIC\(\?:/\.\*\)\?:\.\*},
+		'RF-Sensor-Wildcard wird unter dem gemeinsamen Devicetopic wirksam');
+	unlike(attr_value('MQTT2_OMG_DEVELOPMENT', 'readingList'), qr/runtimeReading/,
+		'einfaches OMG-is_defined-Template verwendet die kompakte JSON-Auswertung');
+	is(reading_value('discovery', 'warningCount'), 0, 'OMG-is_defined erzeugt keine Warnung');
+
+	my $rtl_sensor = '{"stat_t":"+/+/RTL_433toMQTT/Oregon-THGR810/1/169","name":"temperature","uniq_id":"Oregon-THGR810-1-169-temperature_C","val_tpl":"{{ value_json.temperature_C | is_defined }}","unit_of_meas":"C","dev_cla":"temperature","state_class":"measurement","device":{"ids":["Oregon-THGR810-1-169"],"name":"Oregon-THGR810-1-169","mdl":"Oregon-THGR810","via_device":"OpenMQTTGateway"}}';
+	dispatch_message('mqtt', 'omg', 'homeassistant/sensor/Oregon-THGR810-1-169-temperature_C/config', $rtl_sensor);
+	like(attr_value('MQTT2_Oregon_THGR810_1_169', 'readingList'),
+		qr{^\[\^/\]\*/\[\^/\]\*/RTL_433toMQTT/Oregon-THGR810/1/169:\.\*}m,
+		'fuehrende RTL_433-Wildcards werden ohne unsicheres Devicetopic gerendert');
+
+	my $rf_trigger = '{"atype":"trigger","p":"device_automation","type":"Received","stype":"RF-15524904","device":{"ids":["246F287AF0C4"],"name":"OMG_DEVELOPMENT","mf":"OMG_community"},"val_tpl":"{{ trigger.value.raw }}","topic":"home/OMG_DEVELOPMENT/433toMQTT/15524904"}';
+	dispatch_message('mqtt', 'omg', 'homeassistant/device_automation/246F287AF0C4/15524904/config', $rf_trigger);
+	like(attr_value('MQTT2_OMG_DEVELOPMENT', 'readingList'), qr/MQTT2_DISCOVERY_runtimeTriggerReading/,
+		'OMG-RF-Device-Trigger wird mit Triggerkontext integriert');
 };
 
 subtest 'uebernommenes Bestandsdevice erhaelt keine impliziten Semantic-Metadaten' => sub {

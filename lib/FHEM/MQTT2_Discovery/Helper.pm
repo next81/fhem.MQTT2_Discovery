@@ -70,7 +70,7 @@ sub line_key {
 		# Funktionsaufruf; einfache Zeilen bestehen direkt aus diesem Namen.
 		my (undef, $code) = split /\s+/, $line, 2;
 		return '' if !defined $code;
-		return $2 if $code =~ /MQTT2_DISCOVERY_runtimeReading\(.*,\s*(['"])([A-Za-z0-9_.-]+)\1\s*\)/;
+		return $2 if $code =~ /MQTT2_DISCOVERY_runtime(?:Trigger)?Reading\(.*,\s*(['"])([A-Za-z0-9_.-]+)\1\s*\)/;
 		return $1 if $code =~ /^([A-Za-z0-9_.-]+)$/;
 		return '';
 	}

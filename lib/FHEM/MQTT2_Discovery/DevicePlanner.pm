@@ -37,6 +37,7 @@ sub device_topic {
 	# Nur ein eindeutiger Vorschlag, der wirklich alle Nutzdaten-Topics umfasst,
 	# ist verlaesslicher als das spaeter berechnete gemeinsame Prefix.
 	if (@suggested == 1 && $suggested[0] !~ /[\s\x00-\x1f\$]/
+			&& $suggested[0] !~ m{(?:^|/)[+#](?:/|$)}
 			&& !grep { !topic_has_prefix($_, $suggested[0]) } @topics) {
 		return $suggested[0];
 	}
@@ -52,7 +53,7 @@ sub device_topic {
 	my @common;
 	PART: for my $index (0 .. $limit - 1) {
 		my $part = $parts[0][$index];
-		last if !defined($part) || $part eq '';
+		last if !defined($part) || $part eq '' || $part eq '+' || $part eq '#';
 
 		for my $parts (@parts) {
 			last PART if $parts->[$index] ne $part;

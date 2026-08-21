@@ -340,6 +340,42 @@ like($complex_template->{reading_lines}[0]{line},
 unlike($complex_template->{reading_lines}[0]{line}, qr/e3sg/,
 	'auch der Runtime-Fallback verbirgt das Template nicht in Base64');
 
+my $defined_template = MQTT2_Discovery::Mapper::map_entity(
+	entity => entity('sensor', state_topic => 'home/+/BTtoMQTT/device',
+		value_template => '{{ value_json.temperature | is_defined }}'), io_name => 'mqtt', cid => 'client');
+like($defined_template->{reading_lines}[0]{line}, qr{home/\[\^/\]\*/BTtoMQTT/device:\.\*},
+	'eine einzelne MQTT-Wildcard wird als genau ein Topicsegment gerendert');
+like($defined_template->{reading_lines}[0]{line}, qr/json2nameValue/,
+	'is_defined behaelt die kompakte JSON-Auswertung fuer direkte Pfade');
+is($defined_template->{warnings}, [], 'is_defined erzeugt keine Mappingwarnung');
+my ($single_filter) = split /\s+/, $defined_template->{reading_lines}[0]{line}, 2;
+like('home/gateway/BTtoMQTT/device:{"temperature":21}', qr/^$single_filter$/,
+	'eine konkrete Nachricht trifft den gerenderten Einsegmentfilter');
+unlike('home/gateway/extra/BTtoMQTT/device:{"temperature":21}', qr/^$single_filter$/,
+	'die Einsegment-Wildcard akzeptiert keine zusaetzliche Topicebene');
+
+my $multi_wildcard = MQTT2_Discovery::Mapper::map_entity(
+	entity => entity('sensor', state_topic => 'home/gateway/433toMQTT/#'), io_name => 'mqtt', cid => 'client');
+is($multi_wildcard->{reading_lines}[0]{line},
+	'home/gateway/433toMQTT(?:/.*)?:.* sensor',
+	'eine abschliessende MQTT-Mehrsegment-Wildcard umfasst Topic und Untertopics');
+my ($multi_filter) = split /\s+/, $multi_wildcard->{reading_lines}[0]{line}, 2;
+like('home/gateway/433toMQTT/15524904:{"value":15524904}', qr/^$multi_filter$/,
+	'eine konkrete Nachricht trifft den gerenderten Mehrsegmentfilter');
+like('home/gateway/433toMQTT:{}', qr/^$multi_filter$/,
+	'der Mehrsegmentfilter umfasst gemaess MQTT auch sein Elterntopic');
+
+my $literal_wildcard = MQTT2_Discovery::Mapper::map_entity(
+	entity => entity('sensor', state_topic => 'home/sensor+backup/state'), io_name => 'mqtt', cid => 'client');
+like($literal_wildcard->{reading_lines}[0]{line}, qr{sensor\\\+backup},
+	'Wildcardzeichen innerhalb eines Segments bleiben sichere Literale');
+
+my $trigger_context = MQTT2_Discovery::Mapper::map_entity(
+	entity => entity('device_automation', state_topic => 'home/gateway/433toMQTT/42', payload => undef,
+		value_template => '{{ trigger.value.raw }}'), io_name => 'mqtt', cid => 'client');
+like($trigger_context->{reading_lines}[0]{line}, qr/MQTT2_DISCOVERY_runtimeTriggerReading/,
+	'Device-Automation verwendet den eigenen sicheren Triggerkontext');
+
 my $multiline_template = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('sensor', value_template => "{{ value_json.temperature\n  | round(1) }}"), io_name => 'mqtt', cid => 'client');
 like($multiline_template->{reading_lines}[0]{line}, qr/\\x\{0a\}/,

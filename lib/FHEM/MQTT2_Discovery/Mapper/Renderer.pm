@@ -17,7 +17,32 @@ sub _regex_literal {
 	return $value;
 }
 
-# Maskiert ein MQTT-Topic zu einem sicheren, exakt passenden FHEM-Regulaerausdruck.
+# Uebersetzt gueltige MQTT-Filtersegmente in einen sicheren FHEM-Regulaerausdruck.
+sub _mqtt_filter_regex {
+	my ($filter) = @_;
+	my @parts = split m{/}, $filter, -1;
+	my $regex = '';
+
+	# MQTT-Wildcards besitzen nur als vollstaendige Topicsegmente Bedeutung;
+	# abweichende Plus- oder Rautezeichen bleiben sichere Literale.
+	for my $index (0 .. $#parts) {
+		my $part = $parts[$index];
+
+		# Die abschliessende Mehrsegment-Wildcard umfasst auch das Elterntopic
+		# ohne nachfolgenden Slash, wie es die MQTT-Subscription definiert.
+		if ($part eq '#' && $index == $#parts) {
+			$regex .= $index == 0 ? '.*' : '(?:/.*)?';
+			last;
+		}
+
+		$regex .= '/' if $index > 0;
+		$regex .= $part eq '+' ? '[^/]*' : _regex_literal($part);
+	}
+
+	return $regex;
+}
+
+# Maskiert einen MQTT-Topicfilter zu einem sicheren FHEM-Regulaerausdruck.
 sub _regex {
 	my ($topic, $device_topic, $payload) = @_;
 	my $regex;
@@ -27,9 +52,9 @@ sub _regex {
 	if (defined($device_topic) && $device_topic ne ''
 			&& ($topic eq $device_topic || index($topic, "$device_topic/") == 0)) {
 		$regex = '$DEVICETOPIC'
-			. _regex_literal(substr($topic, length($device_topic)));
+			. _mqtt_filter_regex(substr($topic, length($device_topic)));
 	} else {
-		$regex = _regex_literal($topic);
+		$regex = _mqtt_filter_regex($topic);
 	}
 	return $regex . ':' . (defined($payload) && !ref($payload)
 		? _regex_literal($payload) . '$' : '.*');
@@ -116,6 +141,13 @@ sub simple_json_key {
 	my ($template, $compiled) = @_;
 	return undef if !defined($template) || ref($compiled) ne 'HASH';
 	my $ast = $compiled->{ast};
+
+	# is_defined veraendert vorhandene Werte nicht. Direkte JSON-Pfade duerfen
+	# deshalb weiterhin die kompakte json2nameValue-Auswertung verwenden.
+	while (ref($ast) eq 'HASH' && ($ast->{type} || '') eq 'filter'
+			&& ($ast->{name} || '') eq 'is_defined' && !$ast->{argument}) {
+		$ast = $ast->{input};
+	}
 	return undef if ref($ast) ne 'HASH' || ($ast->{type} || '') ne 'path'
 		|| ($ast->{root} || '') ne 'value_json' || ref($ast->{path}) ne 'ARRAY'
 		|| !@{ $ast->{path} };
@@ -159,7 +191,9 @@ sub _render_runtime_reading {
 	my $template = _perl_template_quote($entry->{template});
 	my $reading = _perl_quote($entry->{name});
 	return undef if !defined($template) || !defined($reading);
-	return $regex . ' { MQTT2_DISCOVERY_runtimeReading(' . $template
+	my $function = ($entry->{template_context} || '') eq 'trigger'
+		? 'MQTT2_DISCOVERY_runtimeTriggerReading' : 'MQTT2_DISCOVERY_runtimeReading';
+	return $regex . ' { ' . $function . '(' . $template
 		. ', $EVENT, ' . $reading . ') }';
 }
 

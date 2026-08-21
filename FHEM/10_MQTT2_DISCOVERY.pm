@@ -22,7 +22,7 @@ use MQTT2_Discovery::FHEMGateway ();
 use MQTT2_Discovery::DevicePlanner ();
 use vars qw(%defs %attr %modules $readingFnAttributes);
 
-our $MQTT2_DISCOVERY_VERSION = '0.8.0';
+our $MQTT2_DISCOVERY_VERSION = '0.9.0';
 our $MQTT2_DISCOVERY_QUEUE_DELAY = 0.01;
 
 # --- FHEM-Zugriffe und Logging ------------------------------------------------
@@ -1415,6 +1415,27 @@ sub MQTT2_Discovery_commandValue {
 	return $event;
 }
 
+# Baut den sicheren Home-Assistant-Kontext fuer MQTT-Device-Trigger auf.
+sub MQTT2_DISCOVERY_triggerVars($) {
+	my ($event) = @_;
+	$event = '' if !defined $event;
+	my ($decoded, $has_json);
+	$has_json = eval { $decoded = JSON::PP::decode_json($event); 1 } ? 1 : 0;
+	my %trigger = (
+		payload => $event,
+		value   => $has_json ? $decoded : $event,
+	);
+
+	# JSON-Trigger erhalten dieselben strukturierten Aliase, die HA-Templates
+	# fuer value_json und payload_json bereitstellen.
+	if ($has_json) {
+		$trigger{value_json} = $decoded;
+		$trigger{payload_json} = $decoded;
+	}
+
+	return { trigger => \%trigger };
+}
+
 # Die Wrapper rufen nur die sichere Template-Engine auf; Discovery-Text wird nie als Perl-Code evaluiert.
 sub MQTT2_Discovery_runtime {
 	my ($operation, @arguments) = @_;
@@ -1430,6 +1451,14 @@ sub MQTT2_Discovery_runtime {
 			my ($template, $event, $reading) = @arguments;
 			my $compiled = MQTT2_Discovery::Template::compile($template);
 			my $result = MQTT2_Discovery::Template::render($compiled, value => $event);
+			$answer = { $reading => $result->{value} }
+				if ref($result) eq 'HASH' && $result->{ok};
+		} elsif ($operation eq 'triggerReading') {
+			my ($template, $event, $reading) = @arguments;
+			my $compiled = MQTT2_Discovery::Template::compile($template);
+			my $result = MQTT2_Discovery::Template::render(
+				$compiled, value => $event, vars => MQTT2_DISCOVERY_triggerVars($event),
+			);
 			$answer = { $reading => $result->{value} }
 				if ref($result) eq 'HASH' && $result->{ok};
 		} elsif ($operation eq 'templatePublish') {
@@ -1478,6 +1507,12 @@ sub MQTT2_Discovery_runtime {
 # Rendert ein Runtime-Reading und liefert bei Fehlern einen leeren Reading-Hash.
 sub MQTT2_DISCOVERY_runtimeReading($$$) {
 	my $answer = MQTT2_Discovery_runtime('reading', @_);
+	return ref($answer) eq 'HASH' ? $answer : {};
+}
+
+# Rendert ein Device-Automation-Reading mit dem sicheren HA-Triggerkontext.
+sub MQTT2_DISCOVERY_runtimeTriggerReading($$$) {
+	my $answer = MQTT2_Discovery_runtime('triggerReading', @_);
 	return ref($answer) eq 'HASH' ? $answer : {};
 }
 

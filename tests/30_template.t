@@ -27,6 +27,12 @@ is(value_of('{{ value | upper | trim }}', ' abc ')->{value}, 'ABC', 'Filterkette
 is(value_of('{{ value | int }}', '12.9')->{value}, '12', 'int');
 is(value_of('{{ value | float }}', '12.5')->{value}, '12.5', 'float');
 is(value_of('{{ value_json.temperature | float | round(1) }}', '{"temperature":12.56}')->{value}, '12.6', 'round');
+is(value_of('{{ value_json.temperature | is_defined }}', '{"temperature":21.5}')->{value}, '21.5',
+	'is_defined reicht einen vorhandenen JSON-Wert unveraendert weiter');
+ok(!value_of('{{ value_json.temperature | is_defined }}', '{}')->{ok},
+	'is_defined unterdrueckt einen fehlenden JSON-Wert');
+ok(!MQTT2_Discovery::Template::compile('{{ value | is_defined(1) }}')->{ok},
+	'is_defined akzeptiert keine Argumente');
 is(value_of('{{ value | default(7) }}', '0')->{value}, '0', 'default ersetzt gueltige Null nicht');
 is(value_of('{{ missing | default(7) }}', '')->{value}, '7', 'default ersetzt fehlenden Wert');
 is(value_of("{{ 'on' if value == 'ON' else 'off' }}", 'ON')->{value}, 'on', 'Ternary wahr');

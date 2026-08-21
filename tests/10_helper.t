@@ -23,6 +23,8 @@ is(line_key('set', 'power:on,off topic value'), 'power', 'Set-Schluessel wird er
 is(line_key('reading', 'topic:.* state'), 'state', 'Reading-Schluessel wird erkannt');
 is(line_key('reading', "topic:.* { MQTT2_DISCOVERY_runtimeReading('{{ value | upper }}', \$EVENT, 'state') }"),
 	'state', 'Reading-Schluessel wird aus lesbarem Runtime-Aufruf erkannt');
+is(line_key('reading', "topic:.* { MQTT2_DISCOVERY_runtimeTriggerReading('{{ trigger.value.raw }}', \$EVENT, 'event') }"),
+	'event', 'Reading-Schluessel wird aus einem Trigger-Runtime-Aufruf erkannt');
 
 subtest 'konservativer Merge' => sub {
 	my $result = merge_generated_lines(
