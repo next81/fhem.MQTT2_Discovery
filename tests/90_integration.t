@@ -45,6 +45,8 @@ subtest 'klassischer Switch und Dispatch-Konsum' => sub {
 	my $seen = dispatch_message('mqtt', 'client1', 'homeassistant/switch/node/power/config', switch_payload());
 	is($seen, ['MQTT2_DISCOVERY'], 'Discovery wird konsumiert und erreicht MQTT2_DEVICE/Bridge nicht');
 	ok($main::defs{MQTT2_Node_node}, 'MQTT2_DEVICE wurde angelegt');
+	is($main::defs{MQTT2_Node_node}{DEF}, 'client1',
+		'MQTT2_SERVER behaelt die tatsaechlich dispatchte Publisher-CID');
 	like(attr_value('MQTT2_Node_node', 'readingList'), qr/\$DEVICETOPIC\/state/,
 		'readingList verwendet das gemeinsame MQTT2-Devicetopic');
 	like(attr_value('MQTT2_Node_node', 'setList'), qr/power:on,off/, 'setList enthaelt Switch-Setter');
@@ -59,6 +61,31 @@ subtest 'klassischer Switch und Dispatch-Konsum' => sub {
 
 	my $normal = dispatch_message('mqtt', 'client1', 'node/power/state', '1');
 	is($normal, ['MQTT2_DEVICE', 'MQTT_GENERIC_BRIDGE'], 'normales Topic laeuft an nachfolgende Consumer weiter');
+};
+
+subtest 'MQTT2_CLIENT trennt mehrere Discovery-Geraete trotz gemeinsamer Transport-CID' => sub {
+	setup(type => 'MQTT2_CLIENT');
+	is(dispatch_message(
+		'mqtt', 'shared_client', 'homeassistant/switch/alpha/power/config',
+		switch_payload(id => 'alpha'),
+	), ['MQTT2_DISCOVERY'], 'erstes Client-Discovery-Device wird konsumiert');
+	is(dispatch_message(
+		'mqtt', 'shared_client', 'homeassistant/switch/beta/power/config',
+		switch_payload(id => 'beta'),
+	), ['MQTT2_DISCOVERY'], 'zweites Client-Discovery-Device wird konsumiert');
+
+	my $alpha_cid = $main::defs{MQTT2_Node_alpha}{DEF};
+	my $beta_cid = $main::defs{MQTT2_Node_beta}{DEF};
+	like($alpha_cid, qr/^mqtt2_discovery_[0-9a-f]{16}$/,
+		'erstes Ziel besitzt eine virtuelle Discovery-CID');
+	like($beta_cid, qr/^mqtt2_discovery_[0-9a-f]{16}$/,
+		'zweites Ziel besitzt eine virtuelle Discovery-CID');
+	isnt($alpha_cid, $beta_cid,
+		'gemeinsame MQTT2_CLIENT-CID wird nicht zwischen Zieldevices geteilt');
+	is($main::modules{MQTT2_DEVICE}{defptr}{cid}{$alpha_cid}, [$main::defs{MQTT2_Node_alpha}],
+		'erstes Device besitzt einen eindeutigen CID-Bucket');
+	is($main::modules{MQTT2_DEVICE}{defptr}{cid}{$beta_cid}, [$main::defs{MQTT2_Node_beta}],
+		'zweites Device besitzt einen eindeutigen CID-Bucket');
 };
 
 subtest 'HA-Switch verwendet fuer Lesen und Schreiben exakt denselben Namen' => sub {

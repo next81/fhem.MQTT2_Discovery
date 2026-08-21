@@ -76,6 +76,13 @@ State-Topics ausgewertet; die daraus entstehende virtuelle CID wird wie beim
 FHEM-Autocreate als `DEF` eines neuen Bridge-Unterdevices verwendet. Bereits
 anderen Discovery-Identitäten zugeordnete Targets werden nicht erneut verwendet,
 da eine Transport-CID bei einer Bridge mehrere logische Geräte vertreten kann.
+Ein `MQTT2_CLIENT` kennt die Client-ID des urspruenglichen Publishers nicht.
+Falls keine `bridgeRegexp` greift, erzeugt das Modul deshalb aus der stabilen
+Discovery-Geraeteidentitaet eine lokale CID der Form
+`mqtt2_discovery_<hash>`. Unterschiedliche Discovery-Devices teilen dadurch
+nicht die gemeinsame Client-ID der Brokerverbindung. Bei `MQTT2_SERVER` bleibt
+die vom Publisher empfangene CID unveraendert; eine fehlende CID erhaelt
+denselben sicheren Fallback.
 
 Eine Aenderung von `deviceNamePrefix` gilt fuer Devices, die danach erstmals
 entdeckt und angelegt werden.

@@ -300,6 +300,59 @@ subtest 'FHEM-Autocreate-Identitaet folgt CID und bridgeRegexp statt Device-Name
 		'Bridge-Unterdevice ist unter derselben newCid registriert, die FHEM spaeter prueft');
 };
 
+subtest 'MQTT2_CLIENT erhaelt stabile virtuelle Discovery-CIDs' => sub {
+	reset_env();
+	add_iodev('client', 'MQTT2_CLIENT');
+	my ($hash) = define_discovery('discovery', 'client');
+	my $node = '{"stat_t":"node/state","uniq_id":"node_state","dev":{"ids":["node"],"name":"Node"}}';
+	my $other = '{"stat_t":"other/state","uniq_id":"other_state","dev":{"ids":["other"],"name":"Other"}}';
+
+	is(main::MQTT2_DISCOVERY_process(
+		$hash, 'shared_client', 'homeassistant/sensor/node/state/config', $node,
+	), 'consumed', 'erstes Client-Device wird verarbeitet');
+	is(main::MQTT2_DISCOVERY_process(
+		$hash, 'shared_client', 'homeassistant/sensor/other/state/config', $other,
+	), 'consumed', 'zweites Client-Device wird verarbeitet');
+
+	my $node_cid = $main::defs{Node}{DEF};
+	my $other_cid = $main::defs{Other}{DEF};
+	like($node_cid, qr/^mqtt2_discovery_[0-9a-f]{16}$/,
+		'Client-Device verwendet eine erkennbare virtuelle CID');
+	like($other_cid, qr/^mqtt2_discovery_[0-9a-f]{16}$/,
+		'zweites Client-Device verwendet ebenfalls eine virtuelle CID');
+	isnt($node_cid, $other_cid, 'unterschiedliche Discovery-Identitaeten teilen keine CID');
+	ok(!$main::modules{MQTT2_DEVICE}{defptr}{cid}{shared_client},
+		'gemeinsame MQTT2_CLIENT-Transport-CID registriert kein Discovery-Ziel');
+
+	my $first_cid = $node_cid;
+	is(main::MQTT2_DISCOVERY_process(
+		$hash, 'changed_transport', 'homeassistant/sensor/node/state/config', $node,
+	), 'consumed', 'wiederholte Discovery bleibt trotz anderer Transport-CID gueltig');
+	is($main::defs{Node}{DEF}, $first_cid,
+		'virtuelle CID bleibt aus der stabilen Discovery-Identitaet reproduzierbar');
+
+	reset_env();
+	add_iodev('client', 'MQTT2_CLIENT');
+	($hash) = define_discovery('discovery', 'client');
+	$main::modules{MQTT2_DEVICE}{defptr}{bridge} = {
+		'node/state:.*' => { name => '"bridge_node"', parent => 'general_bridge' },
+	};
+	is(main::MQTT2_DISCOVERY_process(
+		$hash, 'shared_client', 'homeassistant/sensor/node/state/config', $node,
+	), 'consumed', 'Client-Discovery mit passender Bridge-Regel wird verarbeitet');
+	is($main::defs{Node}{DEF}, 'bridge_node',
+		'vorhandene bridgeRegexp besitzt Vorrang vor der gehashten Fallback-CID');
+
+	reset_env();
+	add_iodev('server', 'MQTT2_SERVER');
+	($hash) = define_discovery('discovery', 'server');
+	is(main::MQTT2_DISCOVERY_process(
+		$hash, '', 'homeassistant/sensor/node/state/config', $node,
+	), 'consumed', 'Discovery ohne Transport-CID wird verarbeitet');
+	like($main::defs{Node}{DEF}, qr/^mqtt2_discovery_[0-9a-f]{16}$/,
+		'fehlende Server-CID verwendet denselben sicheren Identity-Fallback');
+};
+
 subtest 'optionales SemanticUI-Fertig-Signal folgt dem Device-Aufbau' => sub {
 	reset_env();
 	add_iodev('server');

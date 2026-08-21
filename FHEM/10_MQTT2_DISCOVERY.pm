@@ -914,12 +914,18 @@ sub MQTT2_DISCOVERY_target_name($$$) {
 	return $candidate;
 }
 
-# Leitet bei MQTT_GENERIC_BRIDGE aus Topics eine eindeutige logische Client-ID ab.
-sub MQTT2_DISCOVERY_autocreate_cid($$) {
-	my ($mapping, $cid) = @_;
-	return ($cid, undef) if !defined($cid) || $cid eq '';
+# Erzeugt fuer Transporte ohne Publisher-CID einen stabilen lokalen Routing-Schluessel.
+sub MQTT2_DISCOVERY_virtual_cid($) {
+	my ($mapping) = @_;
+	return undef if !defined($mapping->{identity}) || $mapping->{identity} eq '';
+	return 'mqtt2_discovery_' . stable_suffix($mapping->{identity}, 16);
+}
+
+# Leitet aus Bridge-Regeln oder fehlender Publisher-Identitaet die Ziel-CID ab.
+sub MQTT2_DISCOVERY_autocreate_cid($$$) {
+	my ($mapping, $cid, $io_type) = @_;
+	my $transport_cid = defined($cid) ? $cid : '';
 	my $bridge = $modules{MQTT2_DEVICE}{defptr}{bridge};
-	return ($cid, undef) if ref($bridge) ne 'HASH' || !keys %$bridge;
 
 	my @topics = stable_unique(map { $_->{topic} }
 		grep { ref($_) eq 'HASH' && defined($_->{topic}) && $_->{topic} ne '' }
@@ -931,7 +937,7 @@ sub MQTT2_DISCOVERY_autocreate_cid($$) {
 	# aus dem Discovery-Payload, und wird in einer Fehlergrenze ausgewertet.
 	for my $topic (@topics) {
 
-		for my $regexp (sort keys %$bridge) {
+		for my $regexp (sort keys %{ ref($bridge) eq 'HASH' ? $bridge : {} }) {
 			my $rule = $bridge->{$regexp};
 			next if ref($rule) ne 'HASH' || !defined($rule->{name});
 			my ($matched, $new_cid);
@@ -939,7 +945,7 @@ sub MQTT2_DISCOVERY_autocreate_cid($$) {
 
 				# Nur eine zur Topic- oder CID/Topic-Form passende Bridge-Regel darf die
 				# Transport-CID durch ihre logisch abgeleitete Client-ID ersetzen.
-				if ("$topic:" =~ m/^$regexp$/s || "$cid:$topic:" =~ m/^$regexp$/s) {
+				if ("$topic:" =~ m/^$regexp$/s || "$transport_cid:$topic:" =~ m/^$regexp$/s) {
 					$matched = 1;
 					$new_cid = eval $rule->{name};
 					die $@ if $@;
@@ -959,7 +965,18 @@ sub MQTT2_DISCOVERY_autocreate_cid($$) {
 	return (undef, 'Discovery-Topics ergeben mehrere bridgeRegexp-Client-IDs: ' . join(', ', sort keys %resolved))
 		if keys(%resolved) > 1;
 	my ($resolved_cid) = keys %resolved;
-	return defined($resolved_cid) ? ($resolved_cid, undef) : ($cid, undef);
+	return ($resolved_cid, undef) if defined($resolved_cid);
+
+	# MQTT2_CLIENT kennt nur die Client-ID seiner eigenen Brokerverbindung und
+	# nicht die des urspruenglichen Publishers. Eine fehlende Transport-CID hat
+	# dieselbe Grenze und erhaelt deshalb ebenfalls eine logische Discovery-CID.
+	if (($io_type || '') eq 'MQTT2_CLIENT' || $transport_cid eq '') {
+		my $virtual_cid = MQTT2_DISCOVERY_virtual_cid($mapping);
+		return (undef, 'Discovery-Geraeteidentitaet kann keine virtuelle Client-ID bilden')
+			if !defined($virtual_cid);
+		return ($virtual_cid, undef);
+	}
+	return ($transport_cid, undef);
 }
 
 # Findet unter Beruecksichtigung fremder Registry-Besitzer ein eindeutiges CID-Zieldevice.
@@ -992,7 +1009,16 @@ sub MQTT2_DISCOVERY_stage_mapping($$$$) {
 	my $identity = $mapping->{identity};
 	my $record = $registry->{devices}{$identity};
 	my $created_now = 0;
-	my ($target_cid, $cid_error) = MQTT2_DISCOVERY_autocreate_cid($mapping, $cid);
+	my ($target_cid, $cid_error);
+
+	# Die Registry haelt die dauerhafte Zielzuordnung. Nur eine erstmals
+	# auftretende Discovery-Identitaet benoetigt eine neue CID-Aufloesung.
+	if ($record) {
+		$target_cid = $record->{cid};
+	} else {
+		my $io_type = $defs{ $hash->{IODevName} }{TYPE} || '';
+		($target_cid, $cid_error) = MQTT2_DISCOVERY_autocreate_cid($mapping, $cid, $io_type);
+	}
 	return $cid_error if $cid_error;
 	my ($cid_target, $target_error) = MQTT2_DISCOVERY_existing_cid_target(
 		$hash, $registry, $identity, $mapping, $target_cid,
@@ -1610,7 +1636,10 @@ configuration, <code>ignore</code> skips the device and <code>replace</code> rep
 conflicting generated lines while preserving unrelated manual lines. Existing
 <code>MQTT2_DEVICE</code> devices are resolved through FHEM's CID registry, independent
 of their current name. Configured <code>bridgeRegexp</code> rules are applied to the
-announced state topics before this lookup.<br>
+announced state topics before this lookup. Since an <code>MQTT2_CLIENT</code> cannot
+observe the original publisher CID, a stable virtual CID derived from the discovery
+device identity is used when no bridge rule matches. <code>MQTT2_SERVER</code> keeps
+the publisher CID.<br>
 Syntax: <code>attr &lt;name&gt; existingDevice &lt;conservative|ignore|replace&gt;</code>
 </li><br>
 <li><a id="MQTT2_DISCOVERY-attr-autoCreate"></a><b>autoCreate</b><br>
@@ -1681,7 +1710,10 @@ Konfiguration, <code>ignore</code> ueberspringt das Device und <code>replace</co
 ersetzt kollidierende erzeugte Zeilen, behaelt aber unabhaengige manuelle Zeilen.
 Vorhandene <code>MQTT2_DEVICE</code>-Devices werden unabhaengig von ihrem aktuellen
 Namen ueber FHEMs CID-Register aufgeloest. Konfigurierte <code>bridgeRegexp</code>-
-Regeln werden davor auf die angekuendigten State-Topics angewandt.<br>
+Regeln werden davor auf die angekuendigten State-Topics angewandt. Da ein
+<code>MQTT2_CLIENT</code> die urspruengliche Publisher-CID nicht kennt, wird ohne
+passende Bridge-Regel eine stabile virtuelle CID aus der Discovery-Geraeteidentitaet
+gebildet. Beim <code>MQTT2_SERVER</code> bleibt die Publisher-CID erhalten.<br>
 Syntax: <code>attr &lt;name&gt; existingDevice &lt;conservative|ignore|replace&gt;</code>
 </li><br>
 <li><a id="MQTT2_DISCOVERY-attr-autoCreate"></a><b>autoCreate</b><br>
