@@ -139,34 +139,7 @@ sub identity_template {
 # Extrahiert einen direkt lesbaren einzelnen JSON-Schluessel aus einem Template.
 sub simple_json_key {
 	my ($template, $compiled) = @_;
-	return undef if !defined($template) || ref($compiled) ne 'HASH';
-	my $ast = $compiled->{ast};
-
-	# is_defined veraendert vorhandene Werte nicht. Direkte JSON-Pfade duerfen
-	# deshalb weiterhin die kompakte json2nameValue-Auswertung verwenden.
-	while (ref($ast) eq 'HASH' && ($ast->{type} || '') eq 'filter'
-			&& ($ast->{name} || '') eq 'is_defined' && !$ast->{argument}) {
-		$ast = $ast->{input};
-	}
-	return undef if ref($ast) ne 'HASH' || ($ast->{type} || '') ne 'path'
-		|| ($ast->{root} || '') ne 'value_json' || ref($ast->{path}) ne 'ARRAY'
-		|| !@{ $ast->{path} };
-	my @parts;
-
-	for my $part (@{ $ast->{path} }) {
-
-		# Arrayindizes folgen der einsbasierten json2nameValue-Namenskonvention;
-		# einfache Objektfelder koennen unveraendert in den Reading-Key eingehen.
-		if (defined($part) && !ref($part) && $part =~ /^\d+$/) {
-			push @parts, 1 + $part; # json2nameValue nummeriert Arrays ab 1.
-		} elsif (defined($part) && !ref($part) && $part =~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
-			push @parts, $part;
-		} else {
-			return undef;
-		}
-	}
-
-	return join('_', @parts);
+	return MQTT2_Discovery::Template::simple_json_key($template, $compiled);
 }
 
 # Normalisiert boolesche und numerische Retain-Angaben auf einen eindeutigen Wahrheitswert.
@@ -341,6 +314,29 @@ sub render_entry {
 		return $head . ' { MQTT2_DISCOVERY_runtimePublish('
 			. _perl_template_quote($runtime_topic) . ', '
 			. _perl_template_quote($entry->{payload}) . ') }';
+	}
+
+	# Begrenzte JSON-Auswahlen werden bei einfachen Payloadwerten direkt lesbar
+	# gerendert; komplexere Abbildungen bleiben im validierten Runtime-Wrapper.
+	if ($entry->{kind} eq 'json_choice') {
+		my $mapping = $entry->{mapping};
+		my @keys = split /,/, $entry->{spec};
+		my @values = ref($mapping) eq 'HASH' ? map { $mapping->{$_} } @keys : ();
+		my %seen;
+
+		# Nur eindeutige widget-sichere Werte koennen selbst die sichtbaren Choices
+		# bilden und danach ohne weitere Abbildung in das JSON eingesetzt werden.
+		if (_plain_topic($topic) && @values == @keys
+				&& !grep { !defined($_) || ref($_) || $_ !~ /^[A-Za-z0-9_.-]+$/ || $seen{$_}++ } @values) {
+			my $mapped_head = $entry->{name} . ':' . join(',', @values);
+			my $payload = JSON::PP->new->canonical(1)->encode({ $entry->{key} => '__VALUE__' });
+			$payload =~ s/"__VALUE__"/"\$EVTPART1"/;
+			return "$mapped_head $topic $payload";
+		}
+		return $head . ' { MQTT2_DISCOVERY_runtimeJSONChoice('
+			. _perl_template_quote($runtime_topic) . ', '
+			. _perl_template_quote($entry->{key}) . ', '
+			. _perl_hash_literal($mapping) . ', $EVENT) }';
 	}
 
 	# JSON-Sets bauen genau ein Schluessel/Wert-Paar; der Zahlenwert bleibt dabei

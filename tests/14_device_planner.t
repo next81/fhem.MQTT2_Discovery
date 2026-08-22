@@ -19,6 +19,34 @@ is(MQTT2_Discovery::DevicePlanner::device_topic(
 	{ entities => {} }, [{ topic => '+/+/RTL_433toMQTT/model/42' }],
 ), undef, 'fuehrende MQTT-Wildcards werden nicht als Devicetopic verwendet');
 
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => { light => { device_topic => 'zigbee2mqtt' } } },
+	[
+		{ topic => 'zigbee2mqtt/WZ_LIGHTSTRIP_LICHT' },
+		{ topic => 'zigbee2mqtt/WZ_LIGHTSTRIP_LICHT/set' },
+		{ topic => 'zigbee2mqtt/bridge/state', role => 'availability' },
+	],
+), 'zigbee2mqtt/WZ_LIGHTSTRIP_LICHT',
+	'tiefer gemeinsamer Nutzdatenstamm gewinnt gegen einen allgemeineren Parser-Vorschlag');
+
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => {} },
+	[
+		{ topic => 'tele/plug/STATE' },
+		{ topic => 'stat/plug/RESULT' },
+		{ topic => 'cmnd/plug/POWER' },
+	],
+), undef, 'Tasmota-Standardtopics erhalten kein kuenstliches gemeinsames Prefix');
+
+is(MQTT2_Discovery::DevicePlanner::device_topic(
+	{ entities => {} },
+	[
+		{ topic => 'plug/tele/STATE' },
+		{ topic => 'plug/stat/RESULT' },
+		{ topic => 'plug/cmnd/POWER' },
+	],
+), 'plug', 'ein device-first Tasmota-FullTopic kann den sicheren gemeinsamen Stamm nutzen');
+
 my @conflicts;
 my ($prepared, $current) = MQTT2_Discovery::DevicePlanner::prepare_json_readings(
 	'conservative', 'manual/topic:.* temperature', [],

@@ -9,7 +9,8 @@ package MQTT2_Discovery::Parser::HomeAssistant;
 use strict;
 use warnings;
 use JSON::PP qw(decode_json);
-use MQTT2_Discovery::Helper qw(trim stable_unique);
+use MQTT2_Discovery::Helper qw(safe_name trim stable_unique);
+use MQTT2_Discovery::Template ();
 
 
 my %SUPPORTED = map { $_ => 1 } qw(
@@ -110,6 +111,7 @@ my %ABBREVIATION = (
 	stat_cla        => 'state_class',
 	stat_t          => 'state_topic',
 	stat_tpl        => 'state_template',
+	stat_val_tpl    => 'state_value_template',
 	step            => 'step',
 	stype           => 'subtype',
 	swing_mode_cmd_t => 'swing_mode_command_topic',
@@ -235,7 +237,7 @@ sub _expand_topic {
 sub _expand_topics {
 	my ($config) = @_;
 	my $base = $config->{'~'};
-	return if !defined($base) || ref($base);
+	$base = undef if defined($base) && ref($base);
 
 	for my $key (keys %$config) {
 		next if $key !~ /_topic$/;
@@ -254,6 +256,83 @@ sub _expand_topics {
 		}
 
 	}
+}
+
+# Erkennt einen sicheren direkten JSON-Pfad als bevorzugten FHEM-Readingnamen.
+sub _preferred_json_name {
+	my ($template) = @_;
+	return undef if !defined($template) || ref($template) || $template eq '';
+	my $compiled = MQTT2_Discovery::Template::compile($template);
+	return undef if !$compiled->{ok};
+	my $name = MQTT2_Discovery::Template::simple_json_key($template, $compiled);
+	return defined($name) && $name ne '' ? safe_name($name, 'state') : undef;
+}
+
+# Wertet HA-Boolesche Werte aus, ohne andere JSON-Strukturen als wahr anzunehmen.
+sub _ha_true {
+	my ($value) = @_;
+	return 0 if !defined($value);
+	return $value ? 1 : 0 if !ref($value) || ref($value) eq 'JSON::PP::Boolean';
+	return 0;
+}
+
+# Erkennt die von HA angegebene Helligkeitsfaehigkeit alter und neuer Payloads.
+sub _supports_brightness {
+	my ($config) = @_;
+	return 1 if _ha_true($config->{brightness});
+	return 0 if ref($config->{supported_color_modes}) ne 'ARRAY';
+
+	for my $mode (@{ $config->{supported_color_modes} }) {
+		return 1 if defined($mode) && !ref($mode) && $mode ne 'onoff';
+	}
+
+	return 0;
+}
+
+# Leitet innerhalb des HA-Adapters einen fachlichen Set-Namen aus dem Topic ab.
+sub _command_name {
+	my ($topic) = @_;
+	return undef if !defined($topic) || ref($topic);
+	return safe_name($1, 'set') if $topic =~ m{/(?:cmd|command|set)/([^/]+)$};
+	return undef;
+}
+
+# Uebersetzt HA-Schemaangaben in formatunabhaengige Signal- und Command-Metadaten.
+sub _normalise_bindings {
+	my ($config, $component, $value_template_ref) = @_;
+	my $json_light = $component eq 'light'
+		&& defined($config->{schema}) && !ref($config->{schema}) && $config->{schema} eq 'json';
+
+	# Beim HA-JSON-Light ist das state-Feld auch ohne mitgeliefertes Template die
+	# verbindliche Zustandsquelle. Diese HA-Regel endet bewusst an dieser Stelle.
+	$$value_template_ref = '{{ value_json.state }}'
+		if $json_light && (!defined($$value_template_ref) || $$value_template_ref eq '');
+	my $preferred_name = _preferred_json_name($$value_template_ref);
+	$config->{preferred_reading_name} = $preferred_name if defined($preferred_name);
+	$config->{state_reading_name} = $preferred_name if defined($preferred_name);
+	$config->{command_set_name} = _command_name($config->{command_topic})
+		if !defined($config->{command_set_name});
+
+	return if !$json_light;
+	$config->{command_set_name} = $preferred_name || 'state';
+	$config->{command_codec} = {
+		format => 'json', key => 'state', value_type => 'string',
+	};
+	return if !_supports_brightness($config);
+
+	# HA legt im JSON-Schema Helligkeit gemeinsam mit dem Zustand auf dieselben
+	# Topics. Der gemeinsame Mapper sieht danach nur getrennte Normalbindungen.
+	$config->{brightness_state_topic} = $config->{state_topic}
+		if !defined($config->{brightness_state_topic});
+	$config->{brightness_command_topic} = $config->{command_topic}
+		if !defined($config->{brightness_command_topic});
+	$config->{brightness_value_template} = '{{ value_json.brightness }}'
+		if !defined($config->{brightness_value_template}) || $config->{brightness_value_template} eq '';
+	$config->{brightness_reading_name} = 'brightness';
+	$config->{brightness_set_name} = 'brightness';
+	$config->{brightness_command_codec} = {
+		format => 'json', key => 'brightness', value_type => 'number',
+	};
 }
 
 # Baut aus einer validierten HA-Komponente die gemeinsame Parser-Entity auf.
@@ -279,7 +358,10 @@ sub _entity {
 	$object_id = $args{object_id} if !defined($object_id) || ref($object_id);
 	my $value_template = exists($config->{value_template})
 		? $config->{value_template}
-		: $config->{state_template};
+		: exists($config->{state_value_template})
+			? $config->{state_value_template}
+			: $config->{state_template};
+	_normalise_bindings($config, $component, \$value_template);
 	my $state_topic = $config->{state_topic};
 
 	# Device-Automations nennen ihr Eingangs-Topic historisch nur "topic".
@@ -302,14 +384,18 @@ sub _entity {
 		command_template => $config->{command_template},
 		availability    => $config->{availability},
 		availability_topic => $config->{availability_topic},
+		device_topic    => $config->{'~'},
 		device          => $config->{device} || {},
 		raw_metadata    => $config,
 	);
 	for my $key (qw(
 		min max step options optimistic unit_of_measurement device_class state_class entity_category schema
+		brightness effect color_temp color_mode white supported_color_modes
+		preferred_reading_name state_reading_name command_set_name command_codec
+		brightness_reading_name brightness_set_name brightness_command_codec
 		payload_on payload_off payload_available payload_not_available payload_home
 		payload_not_home payload_open payload_close payload_stop payload_lock
-		payload_unlock brightness_command_topic brightness_state_topic
+		payload_unlock payload_press brightness_command_topic brightness_state_topic
 		brightness_value_template brightness_scale color_temp_command_topic
 		color_temp_state_topic color_temp_value_template min_mireds max_mireds
 		rgb_command_topic rgb_state_topic rgb_value_template effect_command_topic

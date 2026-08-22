@@ -307,4 +307,37 @@ sub render {
 	return { ok => 1, value => ref($result) ? encode_json($result) : "$result" };
 }
 
+# Extrahiert den direkten JSON-Pfad eines bereits sicher kompilierten Templates.
+sub simple_json_key {
+	my ($template, $compiled) = @_;
+	return undef if !defined($template) || ref($compiled) ne 'HASH';
+	my $ast = $compiled->{ast};
+
+	# is_defined veraendert vorhandene Werte nicht und darf deshalb fuer die
+	# Erkennung eines direkten JSON-Pfads transparent uebersprungen werden.
+	while (ref($ast) eq 'HASH' && ($ast->{type} || '') eq 'filter'
+			&& ($ast->{name} || '') eq 'is_defined' && !$ast->{argument}) {
+		$ast = $ast->{input};
+	}
+	return undef if ref($ast) ne 'HASH' || ($ast->{type} || '') ne 'path'
+		|| ($ast->{root} || '') ne 'value_json' || ref($ast->{path}) ne 'ARRAY'
+		|| !@{ $ast->{path} };
+	my @parts;
+
+	for my $part (@{ $ast->{path} }) {
+
+		# Arrayindizes folgen der einsbasierten json2nameValue-Namenskonvention;
+		# sichere Objektfelder koennen unveraendert in den Reading-Key eingehen.
+		if (defined($part) && !ref($part) && $part =~ /^\d+$/) {
+			push @parts, 1 + $part;
+		} elsif (defined($part) && !ref($part) && $part =~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+			push @parts, $part;
+		} else {
+			return undef;
+		}
+	}
+
+	return join('_', @parts);
+}
+
 1;

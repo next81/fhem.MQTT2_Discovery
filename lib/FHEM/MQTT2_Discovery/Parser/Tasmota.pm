@@ -131,6 +131,7 @@ sub _entity_base {
 		payload_available  => defined($args{config}{onln}) ? "$args{config}{onln}" : 'Online',
 		payload_not_available => defined($args{config}{ofln}) ? "$args{config}{ofln}" : 'Offline',
 		device             => $args{device},
+		json_autocreate    => 1,
 		raw_metadata       => {
 			protocol => 'tasmota', version => $args{config}{ver}, json_autocreate => 1,
 		},
@@ -406,7 +407,10 @@ sub _actuator_entities {
 		my $entity = _entity_base(%args, component => $component, object_id => $object_id, name => $name);
 		$entity->{state_topic} = $state_topic;
 		$entity->{value_template} = $value_template if defined $value_template;
-		$entity->{raw_metadata}{state_reading_name} = $command if !defined $value_template;
+		if (!defined $value_template) {
+			$entity->{state_reading_name} = $command;
+			$entity->{raw_metadata}{state_reading_name} = $command;
+		}
 		$entity->{command_topic} = "$args{command_base}/$command";
 		$entity->{payload_off} = defined($states->[0]) && !ref($states->[0]) ? "$states->[0]" : 'OFF';
 		$entity->{payload_on} = defined($states->[1]) && !ref($states->[1]) ? "$states->[1]" : 'ON';
@@ -561,7 +565,8 @@ sub _sensor_entities {
 		my $object_id = join('_', @id_parts);
 		my $name = join(' ', map { defined($_) ? "$_" : '' } @$path);
 		my $entity = _entity_base(%args, component => 'sensor', object_id => $object_id, name => $name);
-		$entity->{raw_metadata}{json_reading_name} = _fhem_json_reading_name($path);
+		$entity->{json_reading_name} = _fhem_json_reading_name($path);
+		$entity->{raw_metadata}{json_reading_name} = $entity->{json_reading_name};
 		$entity->{state_topic} = "$args{telemetry_base}/SENSOR";
 		$entity->{value_template} = $template;
 		my $key = _sensor_metadata_key($path);
@@ -589,31 +594,35 @@ sub _sensor_entities {
 	return (\@entities, \@warnings);
 }
 
-# Ergaenzt bekannte Sensortypen um Einheit, Rolle und benutzerfreundlichen Namen.
-sub _reading_profile {
+# Beschreibt die Tasmota-Standardtelemetrie als allgemeine zusaetzliche Signale.
+sub _supplemental_signals {
 	my (%args) = @_;
 	my $config = $args{config};
 	my $relays = ref($config->{rl}) eq 'ARRAY' ? $config->{rl} : [];
 	my $numbered = _numbered_power_names($config, $relays);
-	my @power_readings;
+	my @signals = (
+		{ type => 'payload', topic => "$args{telemetry_base}/LWT", name => 'LWT' },
+		(map { +{ type => 'json_flatten', topic => "$args{telemetry_base}/$_", name => $_ } }
+			qw(STATE SENSOR UPTIME)),
+		{
+			type => 'json_sequence', topic => "$args{telemetry_base}/INFO", name => 'INFO',
+			key_prefix => 'Info', parts => [1, 2, 3], unwrap_single_property => 1,
+		},
+		{ type => 'json_flatten', topic => "$args{stat_base}/RESULT", name => 'RESULT' },
+	);
 
-	# Das Profil beschreibt weitere Standard-Readings fuer den spaeteren Mapper,
-	# ohne hier bereits FHEM-readingList-Zeilen zu erzeugen.
+	# Jeder vorhandene Relaykanal ergaenzt sein skalares POWER-Statussignal; die
+	# konkrete Tasmota-Namensregel bleibt damit vollstaendig im Tasmota-Adapter.
 	for my $offset (0 .. $#$relays) {
 		my $type = $relays->[$offset];
 		next if !defined($type) || ref($type) || $type !~ /^\d+$/ || ($type != 1 && $type != 2);
 		my $command = _power_name($offset + 1, $numbered);
-		push @power_readings, {
-			command => $command,
-			reading => $command,
+		push @signals, {
+			type => 'payload', topic => "$args{stat_base}/$command", name => $command,
 		};
 	}
 
-	return {
-		telemetry_base => $args{telemetry_base},
-		stat_base      => $args{stat_base},
-		power_readings => \@power_readings,
-	};
+	return \@signals;
 }
 
 # Baut aus dem gepufferten Config- und Sensorzustand den vollstaendigen Entitysatz neu auf.
@@ -642,9 +651,9 @@ sub _rebuild {
 	my ($sensors, $sensor_warnings) = _sensor_entities(%common, sensors => $args{entry}{sensors});
 	my ($profile_owner) = (@$actuators, @$sensors);
 
-	# Ein einziges Entity transportiert das geraeteweite Reading-Profil; beim
+	# Ein einziges Entity transportiert die geraeteweiten Zusatzsignale; beim
 	# Zusammenfassen landet es trotzdem genau einmal am Zieldevice.
-	$profile_owner->{raw_metadata}{tasmota_reading_profile} = _reading_profile(%common)
+	$profile_owner->{supplemental_signals} = _supplemental_signals(%common)
 		if $profile_owner;
 	my $delete = {
 		operation => 'delete_device', prefix => $args{prefix}, format => 'tasmota',

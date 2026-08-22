@@ -490,6 +490,55 @@ subtest 'Device-Discovery ist atomar abbildbar' => sub {
 		'mehrere Komponenten schreiben setList gemeinsam genau einmal');
 };
 
+subtest 'HA-JSON-Entities erhalten kurze Namen und tiefstes gemeinsames Devicetopic' => sub {
+	setup();
+	my $device = '"dev":{"ids":["z2m_light"],"name":"WZ_LIGHTSTRIP_LICHT"}';
+	my @discoveries = (
+		[
+			'homeassistant/light/z2m_light/light/config',
+			'{"schema":"json","brightness":true,"brightness_scale":254,"stat_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT","cmd_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT/set","avty":[{"t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT/availability","val_tpl":"{{ value_json.state }}"},{"t":"zigbee2mqtt/bridge/state","val_tpl":"{{ value_json.state }}"}],"uniq_id":"z2m_light_light",' . $device . '}',
+		],
+		[
+			'homeassistant/select/z2m_light/effect/config',
+			'{"stat_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT","stat_val_tpl":"{{ value_json.effect }}","cmd_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT/set/effect","ops":["blink","breathe"],"uniq_id":"z2m_light_effect",' . $device . '}',
+		],
+		[
+			'homeassistant/number/z2m_light/effect_speed/config',
+			'{"stat_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT","stat_val_tpl":"{{ value_json.effect_speed }}","cmd_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT/set/effect_speed","min":0,"max":1,"step":0.01,"uniq_id":"z2m_light_effect_speed",' . $device . '}',
+		],
+		[
+			'homeassistant/sensor/z2m_light/linkquality/config',
+			'{"stat_t":"zigbee2mqtt/WZ_LIGHTSTRIP_LICHT","stat_val_tpl":"{{ value_json.linkquality }}","uniq_id":"z2m_light_linkquality",' . $device . '}',
+		],
+	);
+
+	for my $discovery (@discoveries) {
+		is(dispatch_message('mqtt', 'z2m', @$discovery), ['MQTT2_DISCOVERY'],
+			'generische HA-Discovery-Nachricht wird konsumiert');
+	}
+
+	my $name = 'MQTT2_WZ_LIGHTSTRIP_LICHT';
+	is(attr_value($name, 'devicetopic'), 'zigbee2mqtt/WZ_LIGHTSTRIP_LICHT',
+		'das tiefste gemeinsame segmentgenaue Nutzdaten-Prefix wird verwendet');
+	my $reading_list = attr_value($name, 'readingList');
+	like($reading_list, qr/^\$DEVICETOPIC:\.\* \{ json2nameValue\(\$EVENT\) \}$/m,
+		'gemeinsames State-JSON erzeugt kurze fachliche Readings');
+	like($reading_list, qr/^\$DEVICETOPIC\/availability:/m,
+		'geraeteeigene Availability bleibt relativ zum Devicetopic');
+	like($reading_list, qr/^zigbee2mqtt\/bridge\/state:/m,
+		'externe Bridge-Availability bleibt ein absolutes Topic');
+	unlike($reading_list, qr/WZ_LIGHTSTRIP_LICHT_(?:brightness|effect|effect_speed|linkquality)/i,
+		'eindeutige JSON-Fachnamen werden nicht mit dem Geraetenamen qualifiziert');
+
+	my $set_list = attr_value($name, 'setList');
+	like($set_list, qr/^state:ON,OFF \$DEVICETOPIC\/set \{"state":"\$EVTPART1"\}$/m,
+		'JSON-Light-State wird als JSON auf das gemeinsame Command-Topic geschrieben');
+	like($set_list, qr/^brightness:slider,0,1,254 \$DEVICETOPIC\/set \{"brightness":\$EVTPART1\}$/m,
+		'JSON-Light-Brightness verwendet den deklarierten Wertebereich');
+	like($set_list, qr/^effect:blink,breathe \$DEVICETOPIC\/set\/effect$/m,
+		'separate HA-Commands verwenden kurze Namen und korrekt relative Topics');
+};
+
 subtest 'kollidierende Device-Discovery-Namen werden symmetrisch qualifiziert' => sub {
 	setup();
 	my $payload = <<'JSON';
@@ -642,6 +691,9 @@ subtest 'Runtime-Template und Command-Payload' => sub {
 		'node/set PRESS', 'Publish-Wrapper verwendet Klartextargumente');
 	is(main::MQTT2_DISCOVERY_runtimeJSONPublish('node/set', 'brightness', 'brightness 128'),
 		'node/set {"brightness":128}', 'JSON-Command wird kanonisch und ohne Stringverkettungs-Injection erzeugt');
+	is(main::MQTT2_DISCOVERY_runtimeJSONChoice(
+			'node/set', 'state', { on => 'ON', off => 'OFF' }, 'state on'),
+		'node/set {"state":"ON"}', 'JSON-Choice codiert nur den erlaubten gemappten Stringwert');
 
 	is(main::MQTT2_DISCOVERY_runtimeTemplatePublish('x', 'x', 'state value'), undef,
 		'Template-Publish lehnt ein ungueltiges Klartext-Template ab');
@@ -651,6 +703,9 @@ subtest 'Runtime-Template und Command-Payload' => sub {
 		'Choice-Template lehnt ein ungueltiges Template ab');
 	is(main::MQTT2_DISCOVERY_runtimeJSONPublish('x', 'key', 'brightness invalid'), undef,
 		'JSON-Publish lehnt einen nichtnumerischen Wert ab');
+	is(main::MQTT2_DISCOVERY_runtimeJSONChoice(
+			'x', 'state', { on => 'ON' }, 'state invalid'), undef,
+		'JSON-Choice lehnt einen nicht deklarierten Auswahlwert ab');
 };
 
 subtest 'OpenMQTTGateway-typische HA-Discovery' => sub {

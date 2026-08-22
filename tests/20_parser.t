@@ -50,6 +50,33 @@ subtest 'klassische Discovery und Abkuerzungen' => sub {
 	is($long->{entities}[0]{unique_id}, $entity->{unique_id}, 'Kurz- und Langform ergeben dieselbe Unique-ID');
 	is($long->{entities}[0]{state_topic}, $entity->{state_topic}, 'Kurz- und Langform ergeben dasselbe State-Topic');
 
+	my $json_light = parse_config(
+		'homeassistant/light/node42/light/config',
+		'{"schema":"json","stat_t":"node42/light","cmd_t":"node42/light/set","stat_val_tpl":"{{ value_json.state }}","brightness":true}',
+	);
+	is($json_light->{entities}[0]{value_template}, '{{ value_json.state }}',
+		'stat_val_tpl wird als HA-state_value_template uebernommen');
+	is($json_light->{entities}[0]{command_codec},
+		{ format => 'json', key => 'state', value_type => 'string' },
+		'HA-JSON-State wird im HA-Parser als allgemeiner JSON-Command normalisiert');
+	is([$json_light->{entities}[0]{preferred_reading_name}, $json_light->{entities}[0]{command_set_name}],
+		['state', 'state'], 'HA-Parser normalisiert den gemeinsamen State-Namen');
+	is([$json_light->{entities}[0]{brightness_state_topic},
+			$json_light->{entities}[0]{brightness_command_topic},
+			$json_light->{entities}[0]{brightness_value_template}],
+		['node42/light', 'node42/light/set', '{{ value_json.brightness }}'],
+		'HA-Parser zerlegt das gemeinsame JSON-Light-Payload in normale Brightness-Bindings');
+	is($json_light->{entities}[0]{brightness_command_codec},
+		{ format => 'json', key => 'brightness', value_type => 'number' },
+		'HA-Parser beschreibt Brightness als numerischen JSON-Command');
+
+	my $modern_json_light = parse_config(
+		'homeassistant/light/node42/modern/config',
+		'{"schema":"json","stat_t":"node42/modern","cmd_t":"node42/modern/set","supported_color_modes":["brightness"]}',
+	);
+	is($modern_json_light->{entities}[0]{brightness_command_topic}, 'node42/modern/set',
+		'modernes supported_color_modes aktiviert Helligkeit ebenfalls im HA-Parser');
+
 	my $select = parse_config(
 		'homeassistant/select/node42/mode/config',
 		'{"ops":["auto","manual"],"opt":true,"stat_t":"node42/mode","cmd_t":"node42/mode/set"}',

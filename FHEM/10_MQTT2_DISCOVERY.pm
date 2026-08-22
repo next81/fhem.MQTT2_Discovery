@@ -867,6 +867,7 @@ sub MQTT2_DISCOVERY_registry_valid($) {
 sub MQTT2_DISCOVERY_registry($) {
 	my ($hash) = @_;
 	return $hash->{helper}{registry} if ref($hash->{helper}{registry}) eq 'HASH';
+	my $may_cache = $main::init_done ? 1 : 0;
 	my $stored = MQTT2_DISCOVERY_gateway($hash)->reading_value($hash->{NAME}, '.registry', '');
 	my $registry;
 	eval {
@@ -881,7 +882,9 @@ sub MQTT2_DISCOVERY_registry($) {
 		MQTT2_DISCOVERY_log($hash, 2, 'stored registry is empty or invalid; starting with an empty registry') if $stored ne '';
 		$registry = { version => 1, devices => {} };
 	}
-	$hash->{helper}{registry} = $registry;
+	# Vor INITIALIZED ist das statefile noch nicht geladen. Der leere Zwischenstand
+	# darf deshalb nicht den kurz darauf restaurierten Registry-Stand verdecken.
+	$hash->{helper}{registry} = $registry if $may_cache;
 	return $registry;
 }
 
@@ -1186,6 +1189,9 @@ sub MQTT2_DISCOVERY_apply_device_lines($$) {
 
 	my @all_entries = (@reading_entries, @set_entries);
 	my $generated_device_topic = MQTT2_Discovery::DevicePlanner::device_topic($record, \@all_entries);
+	my @device_topic_entries = grep {
+		ref($_) eq 'HASH' && ($_->{role} // '') ne 'availability' && defined($_->{topic})
+	} @all_entries;
 	my $old_device_topic_exists = exists($attr{$name}) && exists($attr{$name}{devicetopic});
 	my $old_device_topic = $old_device_topic_exists ? $attr{$name}{devicetopic} : undef;
 	my $previous_owned_device_topic = $record->{owned_devicetopic};
@@ -1204,12 +1210,12 @@ sub MQTT2_DISCOVERY_apply_device_lines($$) {
 			$manage_device_topic = 1;
 		} elsif (defined($old_device_topic)
 				&& !grep { !MQTT2_Discovery::DevicePlanner::topic_has_prefix($_->{topic}, $old_device_topic) }
-					grep { ref($_) eq 'HASH' && defined($_->{topic}) } @all_entries) {
+					@device_topic_entries) {
 			$render_device_topic = $old_device_topic;
 		}
 	} elsif ($old_device_topic_exists
 			&& !grep { !MQTT2_Discovery::DevicePlanner::topic_has_prefix($_->{topic}, $old_device_topic) }
-				grep { ref($_) eq 'HASH' && defined($_->{topic}) } @all_entries) {
+				@device_topic_entries) {
 		$render_device_topic = $old_device_topic;
 	}
 	my $mode = MQTT2_DISCOVERY_gateway($hash)->attr_value(
@@ -1522,6 +1528,16 @@ sub MQTT2_Discovery_runtime {
 				my $payload = JSON::PP->new->canonical(1)->encode({ $key => 0 + $value });
 				$answer = $topic . ' ' . $payload;
 			}
+		} elsif ($operation eq 'jsonChoice') {
+			my ($topic, $key, $mapping, $event) = @arguments;
+			my $choice = MQTT2_Discovery_commandValue($event);
+
+			# Nur deklarierte Choices gelangen als JSON-String auf das Command-Topic;
+			# dadurch koennen freie Eingaben weder Mapping noch JSON-Struktur umgehen.
+			if (ref($mapping) eq 'HASH' && exists $mapping->{$choice}) {
+				my $payload = JSON::PP->new->canonical(1)->encode({ $key => "$mapping->{$choice}" });
+				$answer = $topic . ' ' . $payload;
+			}
 		} else {
 			die "Unbekannte Runtime-Operation: $operation";
 		}
@@ -1565,6 +1581,11 @@ sub MQTT2_DISCOVERY_runtimePublish($$) {
 # Codiert einen numerischen Set-Wert als kanonisches JSON fuer das Zieltopic.
 sub MQTT2_DISCOVERY_runtimeJSONPublish($$$) {
 	return MQTT2_Discovery_runtime('jsonPublish', @_);
+}
+
+# Codiert einen erlaubten Auswahlwert als kanonisches JSON fuer das Zieltopic.
+sub MQTT2_DISCOVERY_runtimeJSONChoice($$$$) {
+	return MQTT2_Discovery_runtime('jsonChoice', @_);
 }
 
 1;

@@ -27,6 +27,7 @@ sub reset_env {
 	@COMMAND_LOG = ();
 	@LOG_ENTRIES = ();
 	$main::readingFnAttributes = '';
+	$main::init_done = 1;
 	main::MQTT2_DISCOVERY_Initialize($main::modules{MQTT2_DISCOVERY});
 }
 
@@ -82,7 +83,7 @@ sub log_entries { return \@LOG_ENTRIES; }
 
 package main;
 
-our (%defs, %attr, %modules, $readingFnAttributes);
+our (%defs, %attr, %modules, $readingFnAttributes, $init_done);
 
 # Bildet FHEMs AttrVal inklusive Standardwertverhalten fuer Tests nach.
 sub AttrVal($$$) {

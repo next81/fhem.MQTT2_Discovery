@@ -66,6 +66,30 @@ subtest 'Home Assistant normalisiert in Modellversion 1' => sub {
 	ok($mapping->{ok}, 'allgemeiner Mapper verarbeitet das Modell ohne Formatparser');
 };
 
+subtest 'HA-JSON-Light endet als allgemeiner Codecvertrag am Modell' => sub {
+	my $result = consume(
+		'homeassistant/light/node/light/config',
+		'{"schema":"json","stat_t":"node/light","cmd_t":"node/light/set","brightness":true,"dev":{"ids":["node"],"name":"Node"}}',
+	);
+	my $event = $result->{events}[0];
+	my %signals = map { ($_->{id} => $_) } @{ $event->{signals} };
+	my %commands = map { ($_->{id} => $_) } @{ $event->{commands} };
+	is($signals{state}{template}, '{{ value_json.state }}',
+		'HA-Parser liefert das vollstaendig normalisierte State-Signal');
+	is($commands{command}{codec},
+		{ format => 'json', key => 'state', value_type => 'string' },
+		'kanonischer State-Command kennt nur noch den allgemeinen JSON-Codec');
+	is($commands{brightness}{codec},
+		{ format => 'json', key => 'brightness', value_type => 'number' },
+		'kanonischer Brightness-Command ist protokollneutral typisiert');
+	delete @{$event->{entity}{configuration}}{qw(command_codec brightness_command_codec)};
+	my $mapping = MQTT2_Discovery::Mapper::map_model(model => $event, io_name => 'mqtt');
+	is([map { $_->{line} } @{ $mapping->{set_lines} }], [
+		q{state:ON,OFF node/light/set {"state":"$EVTPART1"}},
+		q{brightness:slider,0,1,255 node/light/set {"brightness":$EVTPART1}},
+	], 'Mapper rendert ausschliesslich aus den kanonischen Bindings');
+};
+
 subtest 'Tasmota gewinnt vor dem HA-Fallback und liefert generische Zusatzsignale' => sub {
 	my %states;
 	my $config = '{"dn":"Plug","mac":"AABBCCDDEEFF","state":["OFF","ON"],"t":"plug","ft":"%prefix%/%topic%/","tp":["cmnd","stat","tele"],"rl":[1],"ver":1}';
@@ -77,6 +101,8 @@ subtest 'Tasmota gewinnt vor dem HA-Fallback und liefert generische Zusatzsignal
 	is([map { $_->{type} } @{ $upsert->{extensions}{supplemental_signals} }],
 		[qw(payload json_flatten json_flatten json_flatten json_sequence json_flatten payload)],
 		'Tasmota-Profil ist als allgemeine Signaltypen normalisiert');
+	ok(!grep({ exists($_->{codec}) } @{ $upsert->{commands} }),
+		'Tasmota-Commands erhalten keine HA-JSON-Codecs');
 };
 
 done_testing;

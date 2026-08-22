@@ -406,6 +406,45 @@ subtest 'Registry roundtrippt als nicht ausfuehrbares JSON' => sub {
 	is($mapping->{metadata}{unit}, "\x{b0}C", 'UTF-8-Bytefolge bleibt nach Neustart unveraendert');
 };
 
+subtest 'Registry wird beim Start erst nach dem statefile gecacht' => sub {
+	reset_env();
+	add_iodev('server');
+	my ($running) = define_discovery('discovery', 'server');
+	my $payload = '{"stat_t":"node/data","val_tpl":"{{ value_json.temperature }}","uniq_id":"node_temperature","dev":{"ids":["node"],"name":"Node"}}';
+	is(main::MQTT2_DISCOVERY_process(
+		$running, 'c', 'homeassistant/sensor/node/temperature/config', $payload,
+	), 'consumed', 'Ausgangszustand fuer den simulierten Neustart wird erzeugt');
+	my $stored_registry = reading_value('discovery', '.registry');
+	my $reading_list = attr_value('Node', 'readingList');
+	my $set_list = attr_value('Node', 'setList');
+	my $device_topic = attr_value('Node', 'devicetopic');
+	my $cid = $main::defs{Node}{DEF};
+
+	# Beim Neustart werden Config-Definitionen vor den Readings des statefile geladen.
+	reset_env();
+	add_iodev('server');
+	main::CommandDefine(undef, "Node MQTT2_DEVICE $cid server");
+	$main::attr{Node}{readingList} = $reading_list;
+	$main::attr{Node}{setList} = $set_list;
+	$main::attr{Node}{devicetopic} = $device_topic;
+	$main::init_done = 0;
+	my ($restarted, $define_error) = define_discovery('discovery', 'server');
+	is($define_error, undef, 'Discovery-Definition waehrend des Starts ist gueltig');
+	ok(!exists($restarted->{helper}{registry}),
+		'leerer Vor-statefile-Stand wird nicht im Helper gecacht');
+	$restarted->{READINGS}{'.registry'} = { VAL => $stored_registry, TIME => '2026-08-22 12:00:00' };
+	$main::init_done = 1;
+
+	is(main::MQTT2_DISCOVERY_process(
+		$restarted, 'c', 'homeassistant/sensor/node/temperature/config', $payload,
+	), 'consumed', 'retained Discovery wird nach INITIALIZED erneut verarbeitet');
+	is(attr_value('Node', 'readingList'), $reading_list,
+		'komplexe JSON-readingList-Zeile wird nach dem Neustart nicht dupliziert');
+	my $registry = main::MQTT2_DISCOVERY_registry($restarted);
+	my ($record) = values %{ $registry->{devices} };
+	ok($record->{created}, 'urspruenglicher Besitzstatus bleibt aus dem statefile erhalten');
+};
+
 subtest 'Registry-Klonfehler wird kontrolliert behandelt' => sub {
 	reset_env();
 	add_iodev('server');

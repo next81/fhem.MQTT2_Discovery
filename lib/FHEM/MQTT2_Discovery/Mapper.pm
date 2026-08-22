@@ -52,11 +52,28 @@ sub _reading_name {
 	return _state_path_reading_name($entity->{state_topic}, $fallback);
 }
 
+# Extrahiert einen sicheren Readingnamen aus einem einfachen value_json-Pfad.
+sub _simple_json_reading_name {
+	my ($template) = @_;
+	return undef if !defined($template) || ref($template) || $template eq '';
+	my $compiled = MQTT2_Discovery::Template::compile($template);
+	return undef if !$compiled->{ok};
+	my $name = MQTT2_Discovery::Mapper::Renderer::simple_json_key($template, $compiled);
+	return defined($name) && $name ne '' ? safe_name($name, '') : undef;
+}
+
 # Leitet aus Entity und Binding einen kollisionsarmen logischen Readingpfad ab.
 sub _logical_reading_path {
 	my ($entity) = @_;
 	my $component = safe_name($entity->{component}, 'entity');
 	my $fallback = _reading_name($entity);
+	my $extensions = ref($entity->{_canonical_extensions}) eq 'HASH'
+		? $entity->{_canonical_extensions} : {};
+	my $json_name = defined($entity->{preferred_reading_name})
+			&& !ref($entity->{preferred_reading_name})
+		? safe_name($entity->{preferred_reading_name}, $fallback)
+		: !$extensions->{json_autocreate}
+			? _simple_json_reading_name($entity->{value_template}) : undef;
 
 	# Device-Discovery-Komponentenschluessel sind ueblicherweise mit ihrer
 	# Plattform qualifiziert (z. B. sensor_battery). Der Plattformteil ist ein
@@ -64,17 +81,6 @@ sub _logical_reading_path {
 	if (($entity->{_canonical_layout} || '') eq 'device'
 			&& defined($entity->{component_key}) && !ref($entity->{component_key})) {
 		my $key = safe_name($entity->{component_key}, $fallback);
-		my $json_name;
-
-		# Ein einfacher value_json-Pfad liefert den fachlichen Blattnamen genauer
-		# als der oft mit Plattformpraefix versehene Komponentenschluessel.
-		if (defined($entity->{value_template}) && !ref($entity->{value_template})) {
-			my $compiled = MQTT2_Discovery::Template::compile($entity->{value_template});
-			$json_name = MQTT2_Discovery::Mapper::Renderer::simple_json_key(
-				$entity->{value_template}, $compiled,
-			) if $compiled->{ok};
-			$json_name = safe_name($json_name, '') if defined($json_name) && $json_name ne '';
-		}
 
 		# Wenn Komponentenschluessel und JSON-Blatt zusammenpassen, bleibt ihr
 		# Plattformanteil nur als Namensraum erhalten und nicht im Reading selbst.
@@ -84,10 +90,22 @@ sub _logical_reading_path {
 				? $component : substr($key, 0, length($key) - length($json_name) - 1);
 			return [safe_name($namespace, $component), $json_name];
 		}
+
+		# Weicht der Komponentenschluessel vom JSON-Blatt ab, bleibt er als zweite
+		# Kollisionsstufe erhalten; der sichtbare Name ist trotzdem zuerst das Blatt.
+		return [$component, $key, $json_name]
+			if defined($json_name) && $json_name ne '';
 		my $prefix = $component . '_';
 		my $leaf = index($key, $prefix) == 0 && length($key) > length($prefix)
 			? substr($key, length($prefix)) : $key;
 		return [$component, safe_name($leaf, $fallback)];
+	}
+
+	# Auch klassische Entity-Discovery darf den fachlichen JSON-Blattnamen
+	# verwenden. Entity- und Komponentenname bleiben Reserven fuer Kollisionen.
+	if (defined($json_name) && $json_name ne '') {
+		return [$component, $json_name] if $fallback eq $json_name;
+		return [$component, $fallback, $json_name];
 	}
 
 	return [$component, $fallback];
@@ -114,12 +132,11 @@ sub _state_path_reading_name {
 	return $fallback;
 }
 
-# Leitet einen stabilen Set-Namen aus dem letzten Segment eines Command-Topics ab.
-sub _command_topic_set_name {
+# Uebernimmt einen vom Adapter normalisierten Set-Namen oder den logischen Fallback.
+sub _command_set_name {
 	my ($entity, $fallback) = @_;
-	my $topic = $entity->{command_topic};
-	return $fallback if !defined($topic) || ref($topic);
-	return safe_name($1, $fallback) if $topic =~ m{/(?:cmd|command)/([^/]+)$};
+	return safe_name($entity->{command_set_name}, $fallback)
+		if defined($entity->{command_set_name}) && !ref($entity->{command_set_name});
 	return $fallback;
 }
 
@@ -218,6 +235,42 @@ sub _json_publish {
 	my $entry = { kind => 'json', name => $name, spec => $spec, topic => $topic, key => $key };
 	$entry->{line} = MQTT2_Discovery::Mapper::Renderer::render_entry($entry, undef);
 	return $entry;
+}
+
+# Baut einen JSON-Publish fuer eine begrenzte skalare Auswahl auf.
+sub _json_choice {
+	my ($name, $spec, $topic, $key, $mapping) = @_;
+	return undef if !defined($topic) || ref($topic) || $topic eq '';
+	my $entry = {
+		kind => 'json_choice', name => $name, spec => $spec, topic => $topic,
+		key => $key, mapping => $mapping,
+	};
+	$entry->{line} = MQTT2_Discovery::Mapper::Renderer::render_entry($entry, undef);
+	return $entry;
+}
+
+# Waehlt anhand eines allgemeinen Command-Codecs zwischen skalarer und JSON-Ausgabe.
+sub _choice_command {
+	my ($name, $spec, $topic, $mapping, $template, $codec) = @_;
+	return _choice($name, $spec, $topic, $mapping, $template) if !defined($codec);
+	return { error => 'Command-Codec muss ein JSON-Objekt sein' } if ref($codec) ne 'HASH';
+	return { error => 'Nicht unterstuetzter Choice-Command-Codec' }
+		if ($codec->{format} || '') ne 'json' || ($codec->{value_type} || '') ne 'string'
+			|| !defined($codec->{key}) || ref($codec->{key})
+			|| $codec->{key} !~ /^[A-Za-z_][A-Za-z0-9_]*$/;
+	return _json_choice($name, $spec, $topic, $codec->{key}, $mapping);
+}
+
+# Rendert numerische Commands gemaess dem normalisierten skalaren oder JSON-Codec.
+sub _numeric_command {
+	my ($name, $spec, $topic, $template, $codec) = @_;
+	return _publish($name, $spec, $topic, $template) if !defined($codec);
+	return { error => 'Command-Codec muss ein JSON-Objekt sein' } if ref($codec) ne 'HASH';
+	return { error => 'Nicht unterstuetzter numerischer Command-Codec' }
+		if ($codec->{format} || '') ne 'json' || ($codec->{value_type} || '') ne 'number'
+			|| !defined($codec->{key}) || ref($codec->{key})
+			|| $codec->{key} !~ /^[A-Za-z_][A-Za-z0-9_]*$/;
+	return _json_publish($name, $spec, $topic, $codec->{key});
 }
 
 # Haengt einen gueltigen Eintrag an Reading- oder Set-Zielliste des Mappings an.
@@ -321,15 +374,17 @@ sub _map_canonical_entity {
 	my $proposed_name = safe_name($name_prefix . $base, 'device');
 	my $reading_path = _logical_reading_path($entity);
 	my $reading_name = $reading_path->[-1];
-	my $command_set_name = _command_topic_set_name($entity, $reading_name);
+	my $command_set_name = _command_set_name($entity, $reading_name);
 	my $extensions = ref($entity->{_canonical_extensions}) eq 'HASH'
 		? $entity->{_canonical_extensions} : {};
 	my $json_autocreate = $extensions->{json_autocreate};
 	my $json_reading_name = $json_autocreate ? $extensions->{json_reading_name} : undef;
-	my $state_reading_name = defined($extensions->{state_reading_name})
-		&& !ref($extensions->{state_reading_name})
-		&& $extensions->{state_reading_name} =~ /^[A-Za-z0-9_.\/-]+$/
-			? $extensions->{state_reading_name} : $reading_name;
+	my $normalised_state_name = defined($entity->{state_reading_name})
+		? $entity->{state_reading_name} : $extensions->{state_reading_name};
+	my $state_reading_name = defined($normalised_state_name)
+		&& !ref($normalised_state_name)
+		&& $normalised_state_name =~ /^[A-Za-z0-9_.\/-]+$/
+			? $normalised_state_name : $reading_name;
 	my (@readings, @sets, @warnings, @set_state);
 
 	# Number-Entities ohne Grenzen erhalten einen vollstaendigen Standardbereich,
@@ -344,7 +399,7 @@ sub _map_canonical_entity {
 		$component eq 'device_automation' ? $entity->{payload} : undef,
 		$json_autocreate, $json_reading_name, $reading_name);
 
-	# HA-Device-Automationen duerfen in ihren Templates auf den strukturierten
+	# Device-Automationen duerfen in ihren Templates auf den strukturierten
 	# Triggerwert zugreifen; normale State-Entities behalten ihren bisherigen Kontext.
 	if (ref($state_entry) eq 'HASH' && !$state_entry->{error}
 			&& $component eq 'device_automation' && defined($entity->{value_template})) {
@@ -364,10 +419,12 @@ sub _map_canonical_entity {
 	# Die Komponente bestimmt, welche fachlichen Set- und Zusatz-Readings aus den
 	# bereits normalisierten Topics und Payloads entstehen.
 	if ($component eq 'binary_sensor') {
-		# Das rohe Payload bleibt erhalten; HA-spezifische Payloads werden als Metadaten dokumentiert.
+		# Das rohe Payload bleibt erhalten; normalisierte Payloadwerte sind Metadaten.
 	} elsif ($component eq 'switch') {
 		my %mapping = (on => ($entity->{payload_on} // 'ON'), off => ($entity->{payload_off} // 'OFF'));
-		_add_entry(\@sets, \@warnings, _choice($command_set_name, 'on,off', $entity->{command_topic}, \%mapping), 'switch');
+		_add_entry(\@sets, \@warnings,
+			_choice_command($command_set_name, 'on,off', $entity->{command_topic}, \%mapping,
+				undef, $entity->{command_codec}), 'switch');
 		push @set_state, $command_set_name;
 	} elsif ($component eq 'button') {
 		_add_entry(\@sets, \@warnings, _button($reading_name, $entity->{command_topic}, $entity->{payload_press} // 'PRESS'), 'button');
@@ -380,7 +437,9 @@ sub _map_canonical_entity {
 				|| $max !~ /^-?\d+(?:\.\d+)?$/ || $step !~ /^\d+(?:\.\d+)?$/ || $min >= $max || $step <= 0) {
 			push @warnings, 'number: ungueltige min/max/step-Kombination';
 		} else {
-			_add_entry(\@sets, \@warnings, _publish($actual_reading_name // $reading_name, "slider,$min,$step,$max", $entity->{command_topic}, $entity->{command_template}), 'number');
+			_add_entry(\@sets, \@warnings,
+				_numeric_command($actual_reading_name // $reading_name, "slider,$min,$step,$max",
+					$entity->{command_topic}, $entity->{command_template}, $entity->{command_codec}), 'number');
 		}
 	} elsif ($component eq 'select') {
 
@@ -391,7 +450,8 @@ sub _map_canonical_entity {
 			push @warnings, 'select: options fehlen';
 		} else {
 			_add_entry(\@sets, \@warnings,
-				_choice($command_set_name, join(',', @$tokens), $entity->{command_topic}, $mapping),
+				_choice_command($command_set_name, join(',', @$tokens), $entity->{command_topic}, $mapping,
+					undef, $entity->{command_codec}),
 				'select');
 		}
 	} elsif ($component eq 'climate') {
@@ -497,27 +557,33 @@ sub _map_canonical_entity {
 	} elsif ($component eq 'light') {
 		my %mapping = (on => ($entity->{payload_on} // 'ON'), off => ($entity->{payload_off} // 'OFF'));
 		my $state_set_name = $actual_reading_name // "${reading_name}_state";
-		_add_entry(\@sets, \@warnings, _choice($state_set_name, 'on,off', $entity->{command_topic}, \%mapping), 'light state');
+		_add_entry(\@sets, \@warnings,
+			_choice_command($state_set_name, 'on,off', $entity->{command_topic}, \%mapping,
+				undef, $entity->{command_codec}),
+			'light state');
 		my $brightness_topic = $entity->{brightness_command_topic};
 		my $brightness_scale = defined($entity->{brightness_scale}) && !ref($entity->{brightness_scale})
 			&& $entity->{brightness_scale} =~ /^\d+(?:\.\d+)?$/ && $entity->{brightness_scale} > 0
 			? 0 + $entity->{brightness_scale} : 255;
-		_add_entry(\@sets, \@warnings, _publish("${reading_name}_brightness", "slider,0,1,$brightness_scale", $brightness_topic, '{{ value }}'), 'light brightness')
-			if defined $brightness_topic;
-		_add_entry(\@readings, \@warnings,
-			_reading($entity->{brightness_state_topic}, $entity->{brightness_value_template}, "${reading_name}_brightness",
-				undef, $json_autocreate), 'light brightness state');
+		my $brightness_reading_name = defined($entity->{brightness_reading_name})
+				&& !ref($entity->{brightness_reading_name})
+			? safe_name($entity->{brightness_reading_name}, "${reading_name}_brightness")
+			: "${reading_name}_brightness";
+		my $brightness_set_name = defined($entity->{brightness_set_name})
+				&& !ref($entity->{brightness_set_name})
+			? safe_name($entity->{brightness_set_name}, $brightness_reading_name)
+			: $brightness_reading_name;
 
-		# Beim JSON-Light-Schema steckt Helligkeit im gemeinsamen Command-/State-
-		# Payload und benoetigt daher statt eines separaten Topics JSON-Mapping.
-		if (!defined($brightness_topic) && ($entity->{schema} || '') eq 'json' && $entity->{brightness}) {
-			_add_entry(\@sets, \@warnings,
-				_json_publish("${reading_name}_brightness", 'slider,0,1,255', $entity->{command_topic}, 'brightness'), 'light JSON brightness');
-			_add_entry(\@readings, \@warnings,
-				_reading($entity->{state_topic}, $entity->{brightness_value_template} || '{{ value_json.brightness }}',
-					"${reading_name}_brightness", undef, $json_autocreate),
-				'light JSON brightness state');
-		}
+		# Getrennte Bindings und ihr Codec entscheiden allein ueber Topic und
+		# Payloadformat; der Mapper kennt das Quellprotokoll nicht.
+		_add_entry(\@sets, \@warnings,
+			_numeric_command($brightness_set_name, "slider,0,1,$brightness_scale",
+				$brightness_topic, '{{ value }}', $entity->{brightness_command_codec}),
+			'light brightness') if defined $brightness_topic;
+		_add_entry(\@readings, \@warnings,
+			_reading($entity->{brightness_state_topic}, $entity->{brightness_value_template},
+				$brightness_reading_name, undef, $json_autocreate, undef, $brightness_reading_name),
+			'light brightness state');
 		_add_entry(\@sets, \@warnings,
 			_publish("${reading_name}_colorTemp", 'slider,' . ($entity->{min_mireds} // 153)
 				. ',1,' . ($entity->{max_mireds} // 500), $entity->{color_temp_command_topic}, '{{ value }}'),
@@ -533,7 +599,7 @@ sub _map_canonical_entity {
 				undef, $json_autocreate), 'light RGB state');
 
 		# Effekte werden nur angeboten, wenn Discovery eine konkrete Liste liefert;
-		# ihre sicheren Tokens werden auf die von HA erwarteten Indizes abgebildet.
+		# ihre sicheren Tokens werden auf die normalisierten Zielwerte abgebildet.
 		if (ref($entity->{effect_list}) eq 'ARRAY' && @{ $entity->{effect_list} }) {
 			my (%effect_mapping, @effect_tokens);
 

@@ -28,7 +28,7 @@ my %extra = (
 	sensor         => {},
 	binary_sensor  => { payload_on => 'YES', payload_off => 'NO' },
 	switch         => { payload_on => '1', payload_off => '0' },
-	button         => { raw_metadata => { payload_press => 'PRESS' } },
+	button         => { payload_press => 'PRESS' },
 	number         => { min => -10, max => 50, step => 0.5 },
 	select         => { options => ['Auto', 'Eco mode', 'A,B'] },
 	text           => {},
@@ -78,8 +78,23 @@ subtest 'optionale Features' => sub {
 	my $fan = MQTT2_Discovery::Mapper::map_entity(entity => entity('fan'), io_name => 'mqtt', cid => 'c');
 	ok(!grep({ $_->{name} =~ /percentage/ } @{ $fan->{set_lines} }), 'Fan ohne Percentage-Topic erzeugt keinen Percentage-Setter');
 	my $json_light = MQTT2_Discovery::Mapper::map_entity(
-		entity => entity('light', schema => 'json', raw_metadata => { brightness => 1 }), io_name => 'mqtt', cid => 'c');
+		entity => entity('light', value_template => '{{ value_json.state }}',
+			preferred_reading_name => 'state', state_reading_name => 'state', command_set_name => 'state',
+			command_codec => { format => 'json', key => 'state', value_type => 'string' },
+			brightness_state_topic => 'node/light/state', brightness_command_topic => 'node/light/set',
+			brightness_value_template => '{{ value_json.brightness }}',
+			brightness_reading_name => 'brightness', brightness_set_name => 'brightness',
+			brightness_command_codec => { format => 'json', key => 'brightness', value_type => 'number' }),
+		io_name => 'mqtt', cid => 'c');
 	ok(grep({ $_->{name} =~ /brightness/ } @{ $json_light->{set_lines} }), 'JSON-Light erhaelt Brightness-Setter auf dem Command-Topic');
+	is($json_light->{reading_name}, 'state',
+		'JSON-Light leitet seinen Hauptnamen aus dem impliziten state-Feld ab');
+	is($json_light->{set_lines}[0]{line},
+		q{state:ON,OFF node/light/set {"state":"$EVTPART1"}},
+		'JSON-Light sendet ON/OFF als gueltiges JSON statt als skalaren Payload');
+	is($json_light->{set_lines}[1]{line},
+		q{brightness:slider,0,1,255 node/light/set {"brightness":$EVTPART1}},
+		'JSON-Light sendet Helligkeit numerisch im gemeinsamen JSON-Payload');
 };
 
 subtest 'Auswahlwerte werden einheitlich normalisiert' => sub {
@@ -138,6 +153,21 @@ subtest 'kuerzeste eindeutige logische Entity-Namen' => sub {
 		'Reading-Eintrag verwendet den aufgeloesten Namen');
 	is($by_key{'device|sensor_battery'}{semantic_entity}{capabilities}{value}{read}, 'sensor_battery',
 		'SemanticUI-Verweis verwendet denselben aufgeloesten Namen');
+
+	my $inside = MQTT2_Discovery::Mapper::map_entity(
+		entity => entity('sensor', object_id => 'inside', entity_key => 'entity|inside',
+			state_topic => 'room/inside', value_template => '{{ value_json.temperature }}'),
+		io_name => 'mqtt', cid => 'client');
+	my $outside = MQTT2_Discovery::Mapper::map_entity(
+		entity => entity('sensor', object_id => 'outside', entity_key => 'entity|outside',
+			state_topic => 'room/outside', value_template => '{{ value_json.temperature }}'),
+		io_name => 'mqtt', cid => 'client');
+	$resolved = MQTT2_Discovery::Mapper::resolve_mapping_names([$inside, $outside]);
+	%by_key = map { $_->{entity_key} => $_ } @$resolved;
+	is($by_key{'entity|inside'}{reading_name}, 'inside_temperature',
+		'klassische JSON-Kollision wird erst bei Bedarf mit der Entity qualifiziert');
+	is($by_key{'entity|outside'}{reading_name}, 'outside_temperature',
+		'zweite klassische JSON-Kollision wird symmetrisch lesbar qualifiziert');
 };
 
 subtest 'Retained Command-Publishes' => sub {
@@ -170,14 +200,20 @@ subtest 'lesbare Runtime-Command-Fallbacks' => sub {
 		'Choice-Fallback zeigt Topic und Payload-Mapping im Klartext');
 
 	my $button = MQTT2_Discovery::Mapper::map_entity(
-		entity => entity('button', command_topic => 'node/{button}', raw_metadata => { payload_press => 'PRESS' }),
+		entity => entity('button', command_topic => 'node/{button}', payload_press => 'PRESS'),
 		io_name => 'mqtt', cid => 'c');
 	like($button->{set_lines}[0]{line}, qr/runtimePublish\("node\/\{button\}", "PRESS"\)/,
 		'Button-Fallback zeigt Topic und Payload im Klartext');
 
 	my $json = MQTT2_Discovery::Mapper::map_entity(
-		entity => entity('light', command_topic => 'node/{light}', schema => 'json',
-			raw_metadata => { brightness => 1 }), io_name => 'mqtt', cid => 'c');
+		entity => entity('light', command_topic => 'node/{light}', value_template => '{{ value_json.state }}',
+			preferred_reading_name => 'state', state_reading_name => 'state', command_set_name => 'state',
+			command_codec => { format => 'json', key => 'state', value_type => 'string' },
+			brightness_state_topic => 'node/light/state', brightness_command_topic => 'node/{light}',
+			brightness_value_template => '{{ value_json.brightness }}',
+			brightness_reading_name => 'brightness', brightness_set_name => 'brightness',
+			brightness_command_codec => { format => 'json', key => 'brightness', value_type => 'number' }),
+		io_name => 'mqtt', cid => 'c');
 	like(join("\n", map { $_->{line} } @{ $json->{set_lines} }),
 		qr/runtimeJSONPublish\("node\/\{light\}", "brightness", \$EVENT\)/,
 		'JSON-Fallback zeigt Topic und JSON-Schluessel im Klartext');
@@ -327,8 +363,10 @@ ok(!$unknown->{ok} && $unknown->{unsupported}, 'unbekannte Komponente erzeugt ke
 my $template = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('sensor', value_template => '{{ value_json.temperature }}'), io_name => 'mqtt', cid => 'client');
 like($template->{reading_lines}[0]{line}, qr/json2nameValue/, 'einfacher JSON-Pfad verwendet FHEMs Standardauswertung');
-like($template->{reading_lines}[0]{line}, qr/'temperature'\s*=>\s*'sensor'/,
-	'JSON-Schluessel und Zielreading bleiben im Mapping lesbar');
+is($template->{reading_name}, 'temperature',
+	'einfacher JSON-Pfad verwendet seinen fachlichen Blattnamen direkt');
+unlike($template->{reading_lines}[0]{line}, qr/'temperature'\s*=>/,
+	'identische JSON- und Reading-Namen benoetigen keine Umbenennung');
 unlike($template->{reading_lines}[0]{line}, qr/runtimeReading|e3sg/,
 	'einfacher JSON-Pfad benoetigt weder Runtime-Wrapper noch Base64');
 
@@ -389,8 +427,8 @@ my $second_template = MQTT2_Discovery::Mapper::map_entity(
 my $grouped = MQTT2_Discovery::Mapper::render_entries(
 	[$template->{reading_lines}[0], $second_template->{reading_lines}[0]], undef);
 is(scalar(@$grouped), 1, 'mehrere einfache JSON-Pfade desselben Topics werden zusammengefasst');
-like($grouped->[0]{line}, qr/\{'temperature'\s*=>\s*'sensor'\}/,
-	'gruppierte JSON-Auswertung enthaelt nur die abweichende Zuordnung');
+unlike($grouped->[0]{line}, qr/'temperature'\s*=>/,
+	'gruppierte JSON-Auswertung behaelt auch temperature als direkten Blattnamen');
 unlike($grouped->[0]{line}, qr/'humidity'\s*=>/,
 	'identische JSON- und Reading-Namen werden nicht wiederholt');
 unlike($grouped->[0]{line}, qr/\^\(\?:/,
@@ -400,12 +438,14 @@ like($second_template->{reading_lines}[0]{line}, qr/\{ json2nameValue\(\$EVENT\)
 my $array_template = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('sensor', object_id => 'energy_power_0',
 		value_template => '{{ value_json.ENERGY.Power[0] }}'), io_name => 'mqtt', cid => 'client');
-like($array_template->{reading_lines}[0]{line}, qr/'ENERGY_Power_1'\s*=>\s*'energy_power_0'/,
-	'nullbasierter Template-Index wird auf FHEMs einbasierten JSON-Namen abgebildet');
+is($array_template->{reading_name}, 'ENERGY_Power_1',
+	'nullbasierter Template-Index wird direkt auf FHEMs einbasierten JSON-Namen abgebildet');
+unlike($array_template->{reading_lines}[0]{line}, qr/'ENERGY_Power_1'\s*=>/,
+	'direkter Array-Blattname benoetigt keine zusaetzliche JSON-Zuordnung');
 my $autocreate_template = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('sensor', object_id => 'energy_power_0', state_topic => 'node/data',
 		value_template => '{{ value_json.ENERGY.Power[0] }}', device_class => 'power',
-		raw_metadata => { json_autocreate => 1 }), io_name => 'mqtt', cid => 'client');
+		json_autocreate => 1), io_name => 'mqtt', cid => 'client');
 is($autocreate_template->{reading_lines}[0]{line},
 	q{node/data:.* { json2nameValue($EVENT,'',$JSONMAP) }},
 	'Autocreate-Modus verwendet FHEMs kurze JSONMAP-Auswertung');
@@ -418,7 +458,7 @@ is($autocreate_template->{semantic_entity}{capabilities}{value}{read}, 'ENERGY_P
 my $autocreate_switch = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('switch', object_id => 'power', state_topic => 'node/result',
 		value_template => '{{ value_json.POWER }}', payload_on => 'ON', payload_off => 'OFF',
-		raw_metadata => { json_autocreate => 1 }), io_name => 'mqtt', cid => 'client');
+		json_autocreate => 1), io_name => 'mqtt', cid => 'client');
 is($autocreate_switch->{reading_lines}[0]{line},
 	q{node/result:.* { json2nameValue($EVENT,'',$JSONMAP) }},
 	'Autocreate gilt auch fuer native JSON-Aktorzustaende');
@@ -431,7 +471,7 @@ is($autocreate_switch->{semantic_entity}{capabilities}{power}{write}, 'POWER',
 my $numbered_autocreate_switch = MQTT2_Discovery::Mapper::map_entity(
 	entity => entity('switch', object_id => 'power', state_topic => 'node/result',
 		value_template => '{{ value_json.POWER1 }}', payload_on => 'ON', payload_off => 'OFF',
-		raw_metadata => { json_autocreate => 1 }), io_name => 'mqtt', cid => 'client');
+		json_autocreate => 1), io_name => 'mqtt', cid => 'client');
 is($numbered_autocreate_switch->{semantic_entity}{capabilities}{power}{read}, 'POWER1',
 	'SemanticUI uebernimmt den finalen Readingnamen statt ihn aus der Entity-ID abzuleiten');
 is($numbered_autocreate_switch->{set_lines}[0]{line}, 'POWER1:ON,OFF node/switch/set',

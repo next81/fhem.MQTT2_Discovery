@@ -29,25 +29,22 @@ sub device_topic {
 		@{ $entries || [] });
 	return undef if !@topics;
 
-	# Ein vom Parser vorgeschlagener Stamm ist genauer als eine rein
-	# syntaktische Berechnung, wird aber nur nach strenger Pruefung verwendet.
+	# Parser-Vorschlaege sind sichere Kandidaten, duerfen aber einen tieferen
+	# gemeinsamen Geraetestamm nicht mehr verdecken.
 	my @suggested = stable_unique(grep { defined($_) && !ref($_) && $_ ne '' }
 		map { $record->{entities}{$_}{device_topic} } sort keys %{ $record->{entities} || {} });
+	my $suggested = (@suggested == 1 && $suggested[0] !~ /[\s\x00-\x1f\$]/
+		&& $suggested[0] !~ m{(?:^|/)[+#](?:/|$)}
+		&& !grep { !topic_has_prefix($_, $suggested[0]) } @topics)
+			? $suggested[0] : undef;
 
-	# Nur ein eindeutiger Vorschlag, der wirklich alle Nutzdaten-Topics umfasst,
-	# ist verlaesslicher als das spaeter berechnete gemeinsame Prefix.
-	if (@suggested == 1 && $suggested[0] !~ /[\s\x00-\x1f\$]/
-			&& $suggested[0] !~ m{(?:^|/)[+#](?:/|$)}
-			&& !grep { !topic_has_prefix($_, $suggested[0]) } @topics) {
-		return $suggested[0];
-	}
-
-	# Ohne Vorschlag wird das laengste gemeinsame Topic-Prefix gesucht.
+	# Das laengste gemeinsame segmentgenaue Prefix wird aus allen Nutzdaten-
+	# Topics berechnet. Bei mehreren Topics darf das kuerzeste selbst der Stamm sein.
 	my @parts = map { [ split m{/}, $_, -1 ] } @topics;
-	my $limit = @{ $parts[0] } - 1;
+	my $limit = @{ $parts[0] };
 
 	for my $parts (@parts) {
-		$limit = @$parts - 1 if @$parts - 1 < $limit;
+		$limit = @$parts if @$parts < $limit;
 	}
 
 	my @common;
@@ -62,10 +59,20 @@ sub device_topic {
 		push @common, $part;
 	}
 
+	# Ein einzelnes Topic enthaelt keinen Beleg, dass sein Blatt bereits ein
+	# Geraetestamm ist; in diesem Fall bleibt das letzte Segment Nutzdatenname.
+	pop @common if @topics == 1 && @common == $limit && @common > 1;
+
 	# Generische Funktionssegmente sind kein stabiler Geraetestamm.
 	pop @common if @common > 1 && $common[-1] =~ /^(?:cmd|command|set|state|status)$/i;
 	my $candidate = join('/', @common);
-	return $candidate ne '' && $candidate !~ /[\s\x00-\x1f\$]/ ? $candidate : undef;
+	$candidate = undef if $candidate eq '' || $candidate =~ /[\s\x00-\x1f\$]/;
+
+	# Der tiefere der beiden validierten Kandidaten gewinnt. Da beide alle Topics
+	# umfassen, ist die Segment-Prefix-Pruefung zugleich die Eindeutigkeitspruefung.
+	return $candidate if defined($candidate)
+		&& (!defined($suggested) || topic_has_prefix($candidate, $suggested));
+	return $suggested;
 }
 
 # Bereitet JSON-Reading-Eintraege unter Beachtung manueller Namenskonflikte vor.

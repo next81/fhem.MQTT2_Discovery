@@ -88,6 +88,27 @@ Ein Command beschreibt einen schreibbaren Kanal getrennt davon:
 }
 ```
 
+Falls ein Protokoll mehrere Werte in einem JSON-Payload zusammenfasst,
+normalisiert bereits der Adapter das betreffende Command-Binding:
+
+```perl
+{
+  id    => 'brightness',
+  topic => 'node/light/set',
+  name  => 'brightness',
+  codec => {
+    format     => 'json',
+    key        => 'brightness',
+    value_type => 'number',
+  },
+}
+```
+
+Der Mapper unterscheidet damit nur zwischen skalaren und typisierten
+JSON-Commands. Protokollregeln wie Home Assistants `schema=json` und dessen
+Felder `state` oder `brightness` werden ausschliesslich im jeweiligen Adapter
+ausgewertet und gelangen nicht als Mapper-Sonderfall hinter die Modellgrenze.
+
 Templates werden weiterhin ausschliesslich durch den sicheren eingeschraenkten
 Template-Compiler verarbeitet. Nicht unterstuetzte Ausdruecke erzeugen eine
 Warnung oder verhindern die unsichere Teilabbildung.
@@ -95,7 +116,8 @@ Warnung oder verhindern die unsichere Teilabbildung.
 Native Protokolle koennen zusaetzliche generische Signale liefern. Derzeit sind
 `payload`, `json_flatten` und `json_sequence` definiert. Dadurch kann der
 Tasmota-Adapter seine vollstaendige Standard-Telemetrie beschreiben, ohne dass
-der allgemeine Mapper Tasmota-Payloads oder Tasmota-Topicbasen kennen muss.
+das Modell oder der allgemeine Mapper Tasmota-Payloads oder Tasmota-Topicbasen
+kennen muss.
 
 ## Capabilities
 

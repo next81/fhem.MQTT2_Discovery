@@ -39,6 +39,10 @@ subtest 'config und sensors werden in beliebiger Reihenfolge zusammengefuehrt' =
 	is($switch->{command_topic}, 'cmnd/workshop_plug/POWER', 'Commandtopic aus ft/t/tp expandiert');
 	is($switch->{value_template}, '{{ value_json.POWER }}', 'RESULT-Payload wird sicher gelesen');
 	is($switch->{device}{identifiers}, ['tasmota_AABBCCDDEEFF'], 'MAC liefert stabile Device-Identitaet');
+	my ($signal_owner) = grep { ref($_->{supplemental_signals}) eq 'ARRAY' } @{ $result->{entities} };
+	is([map { $_->{type} } @{ $signal_owner->{supplemental_signals} }],
+		[qw(payload json_flatten json_flatten json_flatten json_sequence json_flatten payload)],
+		'Tasmota-Parser liefert seine Standardtelemetrie bereits als allgemeine Zusatzsignale');
 
 	my %sensor_by_id = map { $_->{object_id} => $_ }
 		grep { ($_->{component} || '') eq 'sensor' } @{ $result->{entities} };
@@ -48,6 +52,8 @@ subtest 'config und sensors werden in beliebiger Reihenfolge zusammengefuehrt' =
 	is($sensor_by_id{energy_power}{value_template}, '{{ value_json.ENERGY.Power }}', 'verschachtelter JSON-Pfad stimmt');
 	is($sensor_by_id{energy_power}{raw_metadata}{json_reading_name}, 'ENERGY_Power',
 		'Tasmota-Sensor merkt sich FHEMs abgeflachten Reading-Namen');
+	is($sensor_by_id{energy_power}{json_reading_name}, 'ENERGY_Power',
+		'Tasmota-Parser normalisiert den abgeflachten Reading-Namen vor der Modellgrenze');
 	is($sensor_by_id{ds18b20_temperature}{unit_of_measurement}, "\x{b0}C", 'TempUnit wird uebernommen');
 };
 
@@ -59,6 +65,8 @@ subtest 'alternative FullTopic-Reihenfolge und SetOption4' => sub {
 	is($switch->{command_topic}, 'desk/cmd/POWER', 'FullTopic-Platzhalter werden positionsunabhaengig expandiert');
 	is($switch->{state_topic}, 'desk/state/POWER', 'SetOption4 verwendet das direkte Statustopic');
 	ok(!exists($switch->{value_template}), 'direktes Statustopic braucht kein JSON-Template');
+	is($switch->{state_reading_name}, 'POWER',
+		'Tasmota-Parser normalisiert den skalaren State-Namen vor der Modellgrenze');
 	is([$switch->{payload_off}, $switch->{payload_on}], ['0', '1'], 'konfigurierte State-Payloads bleiben erhalten');
 };
 

@@ -22,15 +22,15 @@ my %KIND = map { $_ => 1 } qw(
 
 my %INTERNAL = map { $_ => 1 } qw(
 	operation prefix format component node_id object_id discovery_topic entity_key
-	component_key unique_id name device raw_metadata
+	component_key unique_id name device raw_metadata device_topic supplemental_signals
 );
 
 # Die Tabellen beschreiben, welche Discovery-Felder ein logisches Lese- oder
 # Schreibsignal speisen. Damit bleibt from_entity frei von langen Sonderfaellen.
 my @SIGNAL_BINDINGS = (
-	[state => 'state_topic', 'value_template'],
+	[state => 'state_topic', 'value_template', 'state_reading_name'],
 	[action => 'action_topic', 'action_template'],
-	[brightness => 'brightness_state_topic', 'brightness_value_template'],
+	[brightness => 'brightness_state_topic', 'brightness_value_template', 'brightness_reading_name'],
 	[color_temperature => 'color_temp_state_topic', 'color_temp_value_template'],
 	[rgb => 'rgb_state_topic', 'rgb_value_template'],
 	[effect => 'effect_state_topic', 'effect_value_template'],
@@ -52,8 +52,8 @@ my @SIGNAL_BINDINGS = (
 );
 
 my @COMMAND_BINDINGS = (
-	[command => 'command_topic', 'command_template'],
-	[brightness => 'brightness_command_topic', undef],
+	[command => 'command_topic', 'command_template', 'command_set_name', 'command_codec'],
+	[brightness => 'brightness_command_topic', undef, 'brightness_set_name', 'brightness_command_codec'],
 	[color_temperature => 'color_temp_command_topic', undef],
 	[rgb => 'rgb_command_topic', undef],
 	[effect => 'effect_command_topic', undef],
@@ -79,7 +79,7 @@ sub _binding_list {
 	my @bindings;
 
 	for my $spec (@$specs) {
-		my ($id, $topic_key, $template_key) = @$spec;
+		my ($id, $topic_key, $template_key, $name_key, $codec_key) = @$spec;
 		my $topic = $configuration->{$topic_key};
 		next if !defined($topic) || ref($topic) || $topic eq '';
 		my %binding = (id => $id, topic => $topic);
@@ -88,10 +88,35 @@ sub _binding_list {
 		# konkretes Feld definiert hat.
 		$binding{template} = $configuration->{$template_key}
 			if defined($template_key) && defined($configuration->{$template_key});
+		$binding{name} = $configuration->{$name_key}
+			if defined($name_key) && defined($configuration->{$name_key});
+		$binding{codec} = { %{ $configuration->{$codec_key} } }
+			if defined($codec_key) && ref($configuration->{$codec_key}) eq 'HASH';
 		push @bindings, \%binding;
 	}
 
 	return \@bindings;
+}
+
+# Projiziert kanonische Bindings fuer den bestehenden flachen Mapperzugang zurueck.
+sub _project_bindings {
+	my ($configuration, $bindings, $specs) = @_;
+	return if ref($configuration) ne 'HASH' || ref($bindings) ne 'ARRAY' || ref($specs) ne 'ARRAY';
+	my %spec_by_id = map { ($_->[0] => $_) } @$specs;
+
+	for my $binding (@$bindings) {
+		next if ref($binding) ne 'HASH' || !defined($binding->{id});
+		my $spec = $spec_by_id{$binding->{id}};
+		next if !$spec;
+		my (undef, $topic_key, $template_key, $name_key, $codec_key) = @$spec;
+		$configuration->{$topic_key} = $binding->{topic};
+		$configuration->{$template_key} = $binding->{template}
+			if defined($template_key) && exists($binding->{template});
+		$configuration->{$name_key} = $binding->{name}
+			if defined($name_key) && exists($binding->{name});
+		$configuration->{$codec_key} = { %{ $binding->{codec} } }
+			if defined($codec_key) && ref($binding->{codec}) eq 'HASH';
+	}
 }
 
 # Ueberfuehrt komponentenspezifische Eigenschaften in ein einheitliches Capability-Modell.
@@ -165,52 +190,14 @@ sub _capabilities {
 	return \%capabilities;
 }
 
-# Bereinigt optionale Reading-Metadaten auf die vom Mapper verstandenen Felder.
-sub _normalise_reading_profile {
-	my ($profile) = @_;
-	return undef if ref($profile) ne 'HASH';
-	my ($telemetry_base, $stat_base) = @{$profile}{qw(telemetry_base stat_base)};
-	return undef if !defined($telemetry_base) || ref($telemetry_base) || $telemetry_base eq ''
-		|| !defined($stat_base) || ref($stat_base) || $stat_base eq '';
-
-	# Das Profil beschreibt Tasmota-Standardtelemetrie deklarativ. Der Mapper
-	# muss dadurch keine Tasmota-Topicstruktur kennen.
-	my @signals = (
-		{ type => 'payload', topic => "$telemetry_base/LWT", name => 'LWT' },
-		(map { +{ type => 'json_flatten', topic => "$telemetry_base/$_", name => $_ } }
-			qw(STATE SENSOR UPTIME)),
-		{
-			type => 'json_sequence', topic => "$telemetry_base/INFO", name => 'INFO',
-			key_prefix => 'Info', parts => [1, 2, 3], unwrap_single_property => 1,
-		},
-		{ type => 'json_flatten', topic => "$stat_base/RESULT", name => 'RESULT' },
-	);
-
-	for my $power (@{ ref($profile->{power_readings}) eq 'ARRAY' ? $profile->{power_readings} : [] }) {
-		next if ref($power) ne 'HASH';
-		my ($command, $reading) = @{$power}{qw(command reading)};
-		next if !defined($command) || ref($command) || $command !~ /^POWER\d*$/
-			|| !defined($reading) || ref($reading) || $reading !~ /^POWER\d*$/;
-		push @signals, { type => 'payload', topic => "$stat_base/$command", name => $reading };
-	}
-
-	return \@signals;
-}
-
 # Konvertiert eine Parser-Entity in ein formatunabhaengiges kanonisches Event.
 sub from_entity {
 	my (%args) = @_;
 	my $source = $args{entity};
 	return undef if ref($source) ne 'HASH';
 	my $operation = $source->{operation} || 'upsert';
-	my $raw = ref($source->{raw_metadata}) eq 'HASH' ? $source->{raw_metadata} : {};
 	my %configuration = map { ($_ => $source->{$_}) }
 		grep { !$INTERNAL{$_} } keys %$source;
-
-	# Einzelne Discovery-Felder wurden historisch nur im Rohobjekt benoetigt.
-	for my $key (qw(payload_press brightness json_autocreate json_reading_name state_reading_name)) {
-		$configuration{$key} = $raw->{$key} if exists($raw->{$key}) && !exists($configuration{$key});
-	}
 
 	my $layout = $source->{format} || 'entity';
 	my $component = $source->{component};
@@ -253,15 +240,16 @@ sub from_entity {
 		@{ $configuration{availability} }
 			if ref($configuration{availability}) eq 'ARRAY';
 
-	$model->{extensions}{device_topic} = $raw->{'~'}
-		if defined($raw->{'~'}) && !ref($raw->{'~'});
+	$model->{extensions}{device_topic} = $source->{device_topic}
+		if defined($source->{device_topic}) && !ref($source->{device_topic});
 
 	for my $key (qw(json_autocreate json_reading_name state_reading_name)) {
 		$model->{extensions}{$key} = $configuration{$key} if exists($configuration{$key});
 	}
 
-	my $profile = _normalise_reading_profile($raw->{tasmota_reading_profile});
-	$model->{extensions}{supplemental_signals} = $profile if $profile;
+	$model->{extensions}{supplemental_signals} = [
+		map { ref($_) eq 'HASH' ? { %$_ } : $_ } @{ $source->{supplemental_signals} }
+	] if ref($source->{supplemental_signals}) eq 'ARRAY';
 
 	# Die Root-Markierung ist eine Adapterentscheidung. Der Mapper muss weder
 	# object_id noch protokollspezifische Device-Namen interpretieren.
@@ -305,6 +293,28 @@ sub validate {
 	for my $collection (qw(signals commands availability)) {
 		return "Ungueltiger Eintrag in $collection"
 			if grep { ref($_) ne 'HASH' } @{ $model->{$collection} || [] };
+	}
+
+	for my $collection (qw(signals commands)) {
+
+		# Bindings duerfen nur sichere skalare Namen sowie den kleinen allgemeinen
+		# JSON-Codecvertrag enthalten; Adapter-Rohdaten sind hier nicht zulaessig.
+		for my $binding (@{ $model->{$collection} }) {
+			return "Ungueltiges Binding in $collection"
+				if !defined($binding->{id}) || ref($binding->{id}) || $binding->{id} eq ''
+					|| !defined($binding->{topic}) || ref($binding->{topic}) || $binding->{topic} eq '';
+			return "Ungueltiger Binding-Name in $collection"
+				if defined($binding->{name}) && (ref($binding->{name})
+					|| $binding->{name} !~ /^[A-Za-z_][A-Za-z0-9_.\/-]*$/);
+			next if !exists($binding->{codec});
+			my $codec = $binding->{codec};
+			return "Ungueltiger Command-Codec in $collection"
+				if ref($codec) ne 'HASH' || ($codec->{format} || '') ne 'json'
+					|| !defined($codec->{key}) || ref($codec->{key})
+					|| $codec->{key} !~ /^[A-Za-z_][A-Za-z0-9_]*$/
+					|| ($codec->{value_type} || '') !~ /^(?:string|number)$/;
+		}
+
 	}
 
 	my %signal = map { ($_->{id} => 1) } @{ $model->{signals} };
@@ -358,6 +368,8 @@ sub to_entity {
 	my $source = $model->{source};
 	my $entity = $model->{entity} || {};
 	my %configuration = %{ $entity->{configuration} || {} };
+	_project_bindings(\%configuration, $model->{signals}, \@SIGNAL_BINDINGS);
+	_project_bindings(\%configuration, $model->{commands}, \@COMMAND_BINDINGS);
 
 	# Der Mapper verarbeitet aus Kompatibilitaetsgruenden weiterhin die flache
 	# Entity-Darstellung. Diese Projektion ist die einzige Rueckuebersetzung.
