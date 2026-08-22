@@ -1,0 +1,23 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin qw($RealBin);
+use File::Spec ();
+
+my ($message_file) = @ARGV;
+die "Pfad zur Commit-Message fehlt.\n" if !defined($message_file) || $message_file eq '';
+
+my $root = File::Spec->rel2abs(
+	File::Spec->catdir($RealBin, File::Spec->updir),
+);
+chdir $root or die "Kann nicht in das Projektverzeichnis $root wechseln: $!\n";
+
+my $generator = File::Spec->catfile('tools', 'update_changed.pl');
+system($^X, $generator, $message_file) == 0
+	or die "Aktualisieren von CHANGED aus der Commit-Message fehlgeschlagen.\n";
+
+# Die erzeugte Historie gehoert zum gerade entstehenden Commit und wird deshalb
+# nach der abschliessenden Commit-Message-Verarbeitung gezielt aufgenommen.
+system('git', 'add', '--', 'CHANGED') == 0
+	or die "Staging von CHANGED fehlgeschlagen.\n";

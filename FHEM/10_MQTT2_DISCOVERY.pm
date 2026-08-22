@@ -22,7 +22,7 @@ use MQTT2_Discovery::FHEMGateway ();
 use MQTT2_Discovery::DevicePlanner ();
 use vars qw(%defs %attr %modules $readingFnAttributes);
 
-our $MQTT2_DISCOVERY_VERSION = '0.9.0';
+our $MQTT2_DISCOVERY_VERSION = '0.9.1';
 our $MQTT2_DISCOVERY_QUEUE_DELAY = 0.01;
 
 # --- FHEM-Zugriffe und Logging ------------------------------------------------

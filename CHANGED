@@ -1,0 +1,8 @@
+# MQTT2_DISCOVERY changes, newest entries first.
+# Generated from commit messages by tools/update_changed.pl.
+# Msg-SHA256: 0c1c5301ee55aa344e6a4d173e1cf43a6c40bf0f52d58b25914cfed708bd69a0
+- change: MQTT2_DISCOVERY: CHANGED automatisch aus Commit-Messages erzeugt
+  - commit-msg-Hook fuer die Changelog-Erstellung ergaenzt
+  - ASCII- und 80-Zeichen-Regeln von FHEM beruecksichtigt
+  - Duplikate und technische Commits kontrolliert behandelt
+  - Generator dokumentiert und mit Tests abgesichert

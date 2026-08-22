@@ -1,2 +1,5 @@
 *.pm text eol=lf
+CHANGED text eol=lf
 controls_MQTT2_DISCOVERY.txt text eol=lf
+.githooks/* text eol=lf
+tools/*.pl text eol=lf
